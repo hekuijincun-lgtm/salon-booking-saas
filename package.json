@@ -1,0 +1,8 @@
+{
+  "name": "salon-booking-saas",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node api/index.js"
+  }
+}

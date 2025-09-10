@@ -1,0 +1,216 @@
+{
+  "service": "Salon Booking SaaS",
+  "version": "1",
+  "features": [
+    {
+      "category": "User Management",
+      "name": "Customer Signup/Login",
+      "summary": "Allows customers to create accounts and log in."
+    },
+    {
+      "category": "Staff Management",
+      "name": "Staff",
+      "summary": "Manage staff profiles and availability."
+    },
+    {
+      "category": "Scheduling",
+      "name": "Time Slots",
+      "summary": "Define and manage available time slots for bookings."
+    },
+    {
+      "category": "Bookings",
+      "name": "Create/Cancel/Reschedule",
+      "summary": "Manage customer bookings including creation, cancellation, and rescheduling."
+    },
+    {
+      "category": "Payments",
+      "name": "Payment Mock",
+      "summary": "Simulate payment processes including intent and marking as paid."
+    },
+    {
+      "category": "Notifications",
+      "name": "Email Template",
+      "summary": "Manage email templates for notifications."
+    },
+    {
+      "category": "Admin",
+      "name": "Simple Admin Dashboard",
+      "summary": "Overview and management of the salon operations."
+    }
+  ],
+  "apis": [
+    {
+      "name": "Customer Signup",
+      "method": "POST",
+      "path": "/api/customers/signup",
+      "auth": "none",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {
+          "email": "string",
+          "password": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "Signup successful"
+        }
+      }
+    },
+    {
+      "name": "Customer Login",
+      "method": "POST",
+      "path": "/api/customers/login",
+      "auth": "none",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {
+          "email": "string",
+          "password": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "token": "string"
+        }
+      }
+    },
+    {
+      "name": "Create Booking",
+      "method": "POST",
+      "path": "/api/bookings",
+      "auth": "user",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {
+          "customerId": "string",
+          "timeSlotId": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "Booking created"
+        }
+      }
+    },
+    {
+      "name": "Cancel Booking",
+      "method": "DELETE",
+      "path": "/api/bookings/{bookingId}",
+      "auth": "user",
+      "request": {
+        "params": {
+          "bookingId": "string"
+        },
+        "query": {},
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "Booking canceled"
+        }
+      }
+    },
+    {
+      "name": "Reschedule Booking",
+      "method": "PUT",
+      "path": "/api/bookings/{bookingId}",
+      "auth": "user",
+      "request": {
+        "params": {
+          "bookingId": "string"
+        },
+        "query": {},
+        "body": {
+          "newTimeSlotId": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "Booking rescheduled"
+        }
+      }
+    },
+    {
+      "name": "Mock Payment Intent",
+      "method": "POST",
+      "path": "/api/payments/intent",
+      "auth": "user",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {
+          "amount": "number",
+          "currency": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "paymentIntentId": "string"
+        }
+      }
+    },
+    {
+      "name": "Mark Payment as Paid",
+      "method": "POST",
+      "path": "/api/payments/mark-paid",
+      "auth": "user",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {
+          "paymentIntentId": "string"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "message": "Payment marked as paid"
+        }
+      }
+    },
+    {
+      "name": "Get Email Template",
+      "method": "GET",
+      "path": "/api/notifications/email-template",
+      "auth": "admin",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "template": "string"
+        }
+      }
+    },
+    {
+      "name": "Admin Dashboard",
+      "method": "GET",
+      "path": "/api/admin/dashboard",
+      "auth": "admin",
+      "request": {
+        "params": {},
+        "query": {},
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "stats": "object"
+        }
+      }
+    }
+  ]
+}

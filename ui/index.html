@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Salon Booking SaaS</title>
+<body style="font-family:system-ui;max-width:880px;margin:auto;padding:24px">
+<h1>Salon Booking SaaS</h1>
+<p>自動生成された最小フロント。APIモックは <code>api/index.js</code> を参照。</p>
+<h2>Features</h2>
+<ul>
+<li>User Management - Customer Signup/Login : Allows customers to create accounts and log in.</li>
+<li>Staff Management - Staff : Manage staff profiles and availability.</li>
+<li>Scheduling - Time Slots : Define and manage available time slots for bookings.</li>
+<li>Bookings - Create/Cancel/Reschedule : Manage customer bookings including creation, cancellation, and rescheduling.</li>
+<li>Payments - Payment Mock : Simulate payment processes including intent and marking as paid.</li>
+<li>Notifications - Email Template : Manage email templates for notifications.</li>
+<li>Admin - Simple Admin Dashboard : Overview and management of the salon operations.</li>
+</ul>
+<h2>APIs</h2>
+<ul>
+<li><code>POST</code> /api/customers/signup</li>
+<li><code>POST</code> /api/customers/login</li>
+<li><code>POST</code> /api/bookings</li>
+<li><code>DELETE</code> /api/bookings/{bookingId}</li>
+<li><code>PUT</code> /api/bookings/{bookingId}</li>
+<li><code>POST</code> /api/payments/intent</li>
+<li><code>POST</code> /api/payments/mark-paid</li>
+<li><code>GET</code> /api/notifications/email-template</li>
+<li><code>GET</code> /api/admin/dashboard</li>
+</ul>
+</body>
