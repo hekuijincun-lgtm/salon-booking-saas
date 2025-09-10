@@ -1,3 +1,37 @@
+// ===== License Helper (drop-in) =====
+const corsHeaders = {
+  "content-type": "application/json; charset=utf-8",
+  "Access-Control-Allow-Origin": "*",
+  "Vary": "origin",
+};
+const json = (obj, status = 200, headers = {}) =>
+  new Response(JSON.stringify(obj), { status, headers: { ...corsHeaders, ...headers } });
+
+const splitList = (s) => (s || "")
+  .split(",")
+  .map(v => v.trim())
+  .filter(Boolean);
+
+const licenseGate = (env, { action, tenant, toolId }) => {
+  // 1) 開発用バイパス（saveLead だけ）
+  if (env.ALLOW_PUBLIC_SAVELEAD === "1" && action === "saveLead") {
+    return { ok: true, reason: "dev_bypass" };
+  }
+  // 2) 正攻法：テナント/ツールのホワイトリスト
+  const activeTenants = splitList(env.ACTIVE_TENANTS);
+  const activeTools   = splitList(env.ACTIVE_TOOLS);
+  const configured = activeTenants.length + activeTools.length > 0;
+
+  const byTenant = tenant && activeTenants.includes(tenant);
+  const byTool   = toolId && activeTools.includes(toolId);
+
+  if (!configured) return { ok: true, reason: "no_rule" }; // ルール未設定なら通す（開発想定）
+  if (byTenant || byTool) return { ok: true, reason: "whitelist" };
+
+  return { ok: false, error: "license_inactive" };
+};
+// ===== /License Helper =====
+
 // Minimal API mock (Node http)
 const http = require('http');
 const routes = [
