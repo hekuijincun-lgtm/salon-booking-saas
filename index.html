@@ -1,31 +1,93 @@
-﻿<!doctype html><meta charset="utf-8"><title>Salon Booking SaaS - Lead</title>
-<body style="font-family:system-ui;max-width:720px;margin:auto;padding:24px">
-  <h1>Salon Booking SaaS</h1>
-  <p>資料請求・デモ希望はこちら✉️</p>
-  <form id="f" onsubmit="return false" style="display:grid;gap:8px;max-width:420px">
-    <input id="name"  placeholder="お名前" required />
-    <input id="email" placeholder="メールアドレス" required type="email"/>
-    <textarea id="memo" placeholder="一言メモ（任意）"></textarea>
-    <button id="btn">送信</button>
-  </form>
-  <pre id="out" style="background:#f6f6f6;padding:12px"></pre>
-<script>
-const TENANT = "t_e367113c2a908db1";
-async function saveLead(){
-  const payload = {
-    toolId: "c058e94d-c92c-4b4b-90e8-dae9afd66c5b", // または実ツールID
-    name:  document.getElementById('name').value.trim(),
-    email: document.getElementById('email').value.trim(),
-    memo:  document.getElementById('memo').value.trim()
-  };
-  const res = await fetch("/api?action=saveLead",{
-    method:"POST",
-    headers:{ "content-type":"application/json", "x-tenant-id": TENANT },
-    body: JSON.stringify({ payload })
-  });
-  const data = await res.json();
-  document.getElementById('out').textContent = JSON.stringify(data,null,2);
-}
-document.getElementById('btn').addEventListener('click', saveLead);
-</script>
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Salon Booking – 先行登録</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin:0; padding:24px; }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; }
+    label { display:block; margin:12px 0 4px; font-weight:600; }
+    input, textarea, select { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; }
+    button { margin-top:16px; padding:12px 16px; border:0; border-radius:10px; font-weight:700; cursor:pointer; }
+    .primary { background:#111; color:#fff; }
+    .muted { color:#666; font-size:13px; margin-top:8px; }
+    .ok { color:#0a7c2f; font-weight:700; }
+    .err { color:#c40000; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Salon Booking / 先行登録</h1>
+    <p class="muted">送信するとリードが保存され、/admin で見えるよ。</p>
+
+    <!-- 暫定（自動埋め込み整備までの固定値） -->
+    <input type="hidden" id="tenant" value="salon-booking" />
+    <input type="hidden" id="toolId" value="tool_salon_booking_v1" />
+
+    <label>お名前</label>
+    <input id="name" placeholder="山田 太郎" required />
+
+    <label>メール</label>
+    <input id="email" type="email" placeholder="you@example.com" required />
+
+    <label>連絡チャネル</label>
+    <select id="channel">
+      <option value="email">Email</option>
+      <option value="line">LINE</option>
+      <option value="twitter">X(Twitter) DM</option>
+    </select>
+
+    <label>メモ（任意）</label>
+    <textarea id="notes" rows="4" placeholder="導入検討の背景など"></textarea>
+
+    <button class="primary" id="send">送信する</button>
+    <div id="status" class="muted"></div>
+  </div>
+
+  <script>
+    const btn = document.getElementById('send');
+    const statusEl = document.getElementById('status');
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      statusEl.textContent = '送信中…';
+
+      const payload = {
+        action: 'saveLead',
+        tenant: document.getElementById('tenant').value,
+        toolId: document.getElementById('toolId').value,
+        name: document.getElementById('name').value.trim(),
+        email: document.getElementById('email').value.trim(),
+        channel: document.getElementById('channel').value,
+        notes: document.getElementById('notes').value.trim(),
+        ua: navigator.userAgent,
+        ts: new Date().toISOString(),
+      };
+
+      try {
+        const res = await fetch('/api', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            // ヘッダは x-tenant-id に統一（_worker.js 側は両対応で中継）
+            'x-tenant-id': payload.tenant,
+          },
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json.ok !== false) {
+          statusEl.innerHTML = '<span class="ok">保存完了！</span> 営業オートメの歯車回り出したよ😎🤟';
+        } else {
+          statusEl.innerHTML = '<span class="err">保存失敗…</span> ' + (json.error || ('HTTP ' + res.status));
+        }
+      } catch (e) {
+        statusEl.innerHTML = '<span class="err">送信エラー</span> ' + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
 </body>
+</html>
