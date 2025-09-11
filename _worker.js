@@ -1,10 +1,8 @@
 // _worker.js — Cloudflare Pages (Advanced Functions)
-// Fixes:
-//  - /api → https://saas.hekuijincun.workers.dev にプロキシ（APIキー＆tenant自動注入）
-//  - /admin → /admin.html（or /admin/index.html）へ rewrite（NO redirect）
-//  - SPA fallback → /index.html（拡張子なしのとき）
-//  - HTMLは no-store、/api 応答は CORS 付与
-//  - /health で稼働確認
+// /api → https://saas.hekuijincun.workers.dev にプロキシ（APIキー＆tenant自動注入）
+// /admin → /admin.html（or /admin/index.html）へ rewrite（NO redirect）
+// SPA fallback → /index.html（拡張子なしのとき）
+// HTMLは no-store、/api 応答は CORS 付与、/health あり
 
 const WORKER_API_BASE = "https://saas.hekuijincun.workers.dev";
 const API_HEADER = "x-api-key";
@@ -27,66 +25,52 @@ export default {
     // ---- /api proxy → Worker ----
     if (url.pathname.startsWith("/api")) {
       const target = new URL(url.pathname + url.search, WORKER_API_BASE);
-
-      // 元ヘッダ
       const h = new Headers(request.headers);
 
-      // API key を自動付与（Pages の環境変数 API_KEY を使用）
+      // API key 自動付与（Pagesの環境変数 API_KEY を使う）
       if (env.API_KEY) {
         if (!h.has(API_HEADER)) h.set(API_HEADER, env.API_KEY);
         if (!h.has("authorization")) h.set("authorization", `Bearer ${env.API_KEY}`);
       }
 
-      // ---- tenant 決定 ----
+      // --- tenant 決定 ---
       let tenant = h.get("x-tenant") || url.searchParams.get("tenant");
       if (!tenant) {
-        // pages.dev のホストからプロジェクト名推定
         // 例: 9bd3c776.salon-booking-saas.pages.dev → "salon-booking-saas"
         const parts = url.hostname.split(".");
         const pagesIdx = parts.indexOf("pages");
-        if (pagesIdx > 0) {
-          tenant = parts[pagesIdx - 1]; // ←プロジェクト名
-        }
+        if (pagesIdx > 0) tenant = parts[pagesIdx - 1];
       }
-      if (!tenant && env.TENANT) tenant = env.TENANT; // カスタムドメイン時のフォールバック
-
+      if (!tenant && env.TENANT) tenant = env.TENANT; // カスタムドメイン用フォールバック
       if (tenant && !h.has("x-tenant")) h.set("x-tenant", tenant);
 
-      // ---- JSONボディに tenant を埋め込む（未指定のとき）----
+      // JSONボディに tenant を注入（未指定なら）
       let body;
       if (!["GET", "HEAD"].includes(method)) {
         const ct = (h.get("content-type") || "").toLowerCase();
         if (ct.includes("application/json")) {
-          const txt = await request.text(); // 一度だけ読み取る
+          const txt = await request.text();
           try {
             const data = txt ? JSON.parse(txt) : {};
             if (tenant != null && data.tenant == null) data.tenant = tenant;
             body = JSON.stringify(data);
           } catch {
-            body = txt; // 解析失敗時は生で渡す
+            body = txt;
           }
         } else {
-          body = request.body; // JSON以外はそのままストリーム
+          body = request.body;
         }
       }
 
       h.delete("host");
-      const proxied = new Request(target, {
-        method,
-        headers: h,
-        body,
-        redirect: "follow",
-      });
-
+      const proxied = new Request(target, { method, headers: h, body, redirect: "follow" });
       const resp = await fetch(proxied);
       return withCors(resp, request);
     }
 
-    // ---- /admin → rewrite（NO redirect）----
+    // ---- /admin rewrite（NO redirect）----
     if (url.pathname === "/admin" || url.pathname === "/admin/") {
-      // 1) /admin.html
       let res = await env.ASSETS.fetch(new Request(new URL("/admin.html", url), request));
-      // 2) なければ /admin/index.html
       if (res.status === 404) {
         res = await env.ASSETS.fetch(new Request(new URL("/admin/index.html", url), request));
       }
@@ -104,26 +88,22 @@ export default {
       return noCacheHTML(res);
     }
 
-    // 本当に無いファイルはそのまま返す
     return res;
   },
 };
 
-// ---------- helpers ----------
 function noCacheHTML(res) {
   const headers = new Headers(res.headers);
   const ct = (headers.get("content-type") || "").toLowerCase();
   if (ct.includes("text/html")) headers.set("Cache-Control", "no-store");
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
-
 function json(data, init) {
   return new Response(JSON.stringify(data), {
     headers: { "content-type": "application/json", "cache-control": "no-store" },
     ...init,
   });
 }
-
 function corsHeaders(req) {
   const origin = req.headers.get("origin") || "*";
   return {
@@ -134,7 +114,6 @@ function corsHeaders(req) {
     "Access-Control-Max-Age": "86400",
   };
 }
-
 function withCors(res, req) {
   const h = new Headers(res.headers);
   const c = corsHeaders(req);
