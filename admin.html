@@ -12,12 +12,14 @@
   th, td { border: 1px solid #eee; padding:8px; font-size:14px; text-align:left; }
   th { background:#fafafa; }
   .pill { padding:4px 8px; border-radius:999px; background:#111; color:#fff; font-size:12px; }
+  .muted { color:#666; font-size:13px; }
 </style>
 </head>
 <body>
   <h1>Leads <span id="count" class="pill">0</span></h1>
+  <p class="muted">認証ヘッダは <code>x-admin-key</code> で送ります。</p>
   <div class="row">
-    <input id="token" placeholder="x-admin-token" style="min-width:260px" />
+    <input id="token" placeholder="x-admin-key" style="min-width:260px" />
     <input id="tenant" placeholder="(任意) tenant 絞り込み" />
     <button id="save">トークン保存</button>
     <button id="reload">更新</button>
@@ -25,12 +27,13 @@
   </div>
   <table id="tbl">
     <thead>
-      <tr><th>createdAt</th><th>name</th><th>email</th><th>channel</th><th>tenant</th><th>toolId</th><th>notes</th></tr>
+      <tr><th>createdAt</th><th>name</th><th>email</th><th>channel</th><th>tenant</th><th>toolId</th><th>memo</th></tr>
     </thead>
     <tbody></tbody>
   </table>
 
 <script>
+  // ---- state ----
   const tokenInput = document.getElementById('token');
   const tenantInput = document.getElementById('tenant');
   const saveBtn = document.getElementById('save');
@@ -39,63 +42,108 @@
   const tbody = document.querySelector('#tbl tbody');
   const count = document.getElementById('count');
 
-  tokenInput.value = localStorage.getItem('ADMIN_TOKEN') || '';
+  // 互換: 以前のADMIN_TOKENも読めるように
+  tokenInput.value = localStorage.getItem('ADMIN_KEY') || localStorage.getItem('ADMIN_TOKEN') || '';
 
   saveBtn.onclick = () => {
-    localStorage.setItem('ADMIN_TOKEN', tokenInput.value.trim());
+    const v = (tokenInput.value || '').trim();
+    localStorage.setItem('ADMIN_KEY', v);
+    localStorage.setItem('ADMIN_TOKEN', v); // 互換保存
     alert('保存したよ！');
   };
 
-  reloadBtn.onclick = async () => {
-    const token = (tokenInput.value || '').trim();
-    if (!token) return alert('x-admin-token を入れてね');
+  // --- helpers ---
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
-    const body = { action:'listLeads' };
-    const t = tenantInput.value.trim();
-    if (t) body.tenant = t;
-
-    const res = await fetch('/api', {
-      method:'POST',
-      headers: { 'Content-Type':'application/json', 'x-admin-token': token },
-      body: JSON.stringify(body),
-    });
-    const json = await res.json().catch(()=>({}));
-    if (!res.ok || json.ok === false) {
-      return alert('取得失敗: ' + (json.error || ('HTTP ' + res.status)));
-    }
-
-    const items = json.items || [];
+  function render(items) {
     count.textContent = items.length;
-    tbody.innerHTML = items.map(it => `
-      <tr>
-        <td>${esc(it.createdAt)}</td>
+    tbody.innerHTML = items.map(it => {
+      const createdAt = it.createdAt || (it.ts ? new Date(it.ts).toISOString() : "");
+      return `<tr>
+        <td>${esc(createdAt)}</td>
         <td>${esc(it.name)}</td>
         <td>${esc(it.email)}</td>
         <td>${esc(it.channel)}</td>
         <td>${esc(it.tenant)}</td>
         <td>${esc(it.toolId)}</td>
-        <td>${esc(it.notes)}</td>
-      </tr>
-    `).join('');
+        <td>${esc(it.memo ?? it.notes)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function fetchViaApi(token, tenant) {
+    const body = { action:'listLeads' };
+    if (tenant) body.tenant = tenant;
+    const res = await fetch('/api', {
+      method:'POST',
+      headers: { 'Content-Type':'application/json', 'x-admin-key': token },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(()=>({}));
+    if (!res.ok || json.ok === false) throw new Error(json.error || ('HTTP ' + res.status));
+    return json.items || [];
+  }
+
+  async function fetchViaList(tenant) {
+    const url = new URL('/list?kind=lead', location.origin);
+    const res = await fetch(url, { method:'GET' });
+    const json = await res.json().catch(()=>({}));
+    const raw = (json.items || []).map(x => x.value || {});
+    return tenant ? raw.filter(it => (it.tenant || '') === tenant) : raw;
+  }
+
+  reloadBtn.onclick = async () => {
+    const token = (tokenInput.value || '').trim();
+    const tenant = (tenantInput.value || '').trim();
+    try {
+      // 優先: /api (認証) → 失敗したら /list にフォールバック
+      let items = [];
+      if (token) {
+        try { items = await fetchViaApi(token, tenant); }
+        catch { items = await fetchViaList(tenant); }
+      } else {
+        items = await fetchViaList(tenant);
+      }
+      // createdAt順に並べ替え
+      items.sort((a,b) => (b.ts||0) - (a.ts||0));
+      render(items);
+    } catch (e) {
+      alert('取得失敗: ' + e.message);
+    }
   };
 
   exportBtn.onclick = async () => {
     const token = (tokenInput.value || '').trim();
-    if (!token) return alert('x-admin-token を入れてね');
-
-    const res = await fetch('/api', {
-      method:'POST',
-      headers: { 'Content-Type':'application/json', 'x-admin-token': token },
-      body: JSON.stringify({ action:'exportLeadsCsv' }),
-    });
-    if (!res.ok) return alert('CSV出力失敗: HTTP ' + res.status);
-    const blob = await res.blob();
+    const tenant = (tenantInput.value || '').trim();
+    let items = [];
+    try {
+      if (token) {
+        try { items = await fetchViaApi(token, tenant); }
+        catch { items = await fetchViaList(tenant); }
+      } else {
+        items = await fetchViaList(tenant);
+      }
+    } catch (e) {
+      return alert('CSV出力失敗: ' + e.message);
+    }
+    const header = ['createdAt','name','email','channel','tenant','toolId','memo'];
+    const lines = [header.join(',')].concat(items.map(it => {
+      const row = {
+        createdAt: it.createdAt || (it.ts ? new Date(it.ts).toISOString() : ''),
+        name: it.name || '',
+        email: it.email || '',
+        channel: it.channel || '',
+        tenant: it.tenant || '',
+        toolId: it.toolId || '',
+        memo: it.memo ?? it.notes ?? ''
+      };
+      return header.map(h => `"${String(row[h]).replace(/"/g,'""')}"`).join(',');
+    }));
+    const blob = new Blob([lines.join('\n')], { type:'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = Object.assign(document.createElement('a'), { href:url, download:'leads.csv' });
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
-
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
   // 起動時に自動更新
   reloadBtn.click();
