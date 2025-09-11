@@ -1,64 +1,73 @@
-// ui/_worker.js
+// /_worker.js  ← リポジトリ直下（Pagesの配信ルート直下）
 export default {
-  async fetch(req, env, ctx) {
+  async fetch(req, env) {
     const url = new URL(req.url);
 
-    // ★ 上流（Cloudflare Workers 本体）
+    // ★ 上流（本体 Worker）— 必要なら自分の URL に変更
     const UPSTREAM = "https://saas.hekuijincun.workers.dev";
 
-    // 便利なデバッグ: /_debug でゲートウェイの状態を確認
+    // 便利デバッグ: /_debug でゲートウェイ状態確認
     if (url.pathname === "/_debug") {
-      const j = {
+      return new Response(JSON.stringify({
         ok: true,
         mode: "pages_gateway",
         upstream: UPSTREAM,
         path: url.pathname,
         method: req.method,
         host: url.host,
-      };
-      return new Response(JSON.stringify(j, null, 2), {
-        headers: { "content-type": "application/json; charset=utf-8" },
+      }, null, 2), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store"
+        }
       });
     }
 
-    // ===== ここからプロキシ判定 =====
-    // 上流へ中継したいパスたち
-    const proxyToUpstream =
-      url.pathname === "/api" ||
-      url.pathname === "/metrics" ||
-      url.pathname === "/health" ||
-      url.pathname === "/diag" ||
-      url.pathname === "/list" ||
-      url.pathname === "/item" ||
-      // ← ここが今回の要：/admin/*（POST を含むすべてのメソッド）を上流に渡す
+    // ===== プロキシ判定 =====
+    // 上流へ中継したいピンポイントのパス
+    const exact = new Set(["/api", "/metrics", "/health", "/diag", "/list", "/item"]);
+    const toUpstream =
+      exact.has(url.pathname) ||
+      // /admin/* は（POST含め）全部 上流へ
       url.pathname.startsWith("/admin/");
 
-    if (proxyToUpstream) {
-      const u = new URL(UPSTREAM + url.pathname + url.search);
-      const hdr = new Headers(req.headers);
-      hdr.set("x-forwarded-host", url.host);
+    if (toUpstream) {
+      const upstreamURL = new URL(UPSTREAM + url.pathname + url.search);
 
-      // POST/PUT などのボディを確実に転送
+      // 元ヘッダを引き継ぎつつ、上流で役立つ情報を付加
+      const headers = new Headers(req.headers);
+      headers.set("x-forwarded-host", url.host);
+      const ip = req.headers.get("cf-connecting-ip") || req.headers.get("x-forwarded-for");
+      if (ip) headers.set("x-forwarded-for", ip);
+
+      // GET/HEAD 以外はボディを転送
       let body;
       if (req.method !== "GET" && req.method !== "HEAD") {
-        // arrayBuffer で安全に引き継ぐ
         body = await req.arrayBuffer();
       }
 
-      return fetch(u.toString(), {
-        method: req.method,
-        headers: hdr,
-        body,
-      });
+      try {
+        return await fetch(upstreamURL, {
+          method: req.method,
+          headers,
+          body,
+          redirect: "manual",
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ ok:false, error:"upstream_error", detail:String(err) }), {
+          status: 502,
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+        });
+      }
     }
 
-    // /admin のトップ（UI）は静的ファイル admin.html を返す
+    // /admin トップは静的 UI（admin.html）を返す
     if (url.pathname === "/admin" && req.method === "GET") {
       const r = new Request(new URL("/admin.html", url.origin), req);
       return env.ASSETS.fetch(r);
     }
 
-    // それ以外はふつうに静的配信（index.html, 画像, JS など）
+    // それ以外は普通に静的配信（index.html や画像/JS/CSSなど）
     return env.ASSETS.fetch(req);
   },
 };
