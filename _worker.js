@@ -1,79 +1,36 @@
-// _worker.js (drop-in)
+// _worker.js (Pages Gateway) — full replace
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // --- Preflight (将来別オリジンでも安心) ---
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-          "Access-Control-Allow-Headers":
-            "Content-Type,authorization,x-admin-token,x-tenant-id,tenant",
-          "Vary": "origin",
-        },
-      });
-    }
+    // 上流 Worker のドメイン（WorkersのOverview→Default domain）
+    const UPSTREAM = (env && env.UPSTREAM) || "https://saas.<YOUR_WORKER>.workers.dev";
 
-    // --- Upstream pass helper ---
-    const pass = async (upstreamPath) => {
-      const host = env.API_HOST || "saas.hekuijincun.workers.dev";
-      const forward = new URL(`https://${host}${upstreamPath}${url.search || ""}`);
-
-      // 元リクエストのヘッダをコピーして上書き
+    // 上流に中継する関数
+    const pass = async (path) => {
+      const target = new URL(path + url.search, UPSTREAM);
       const h = new Headers(request.headers);
 
-      // API_KEY は存在する時だけ付与（undefined対策）
-      if (env.API_KEY) h.set("x-api-key", env.API_KEY);
-
-      // tenant は両対応で受けて両方で中継（ズレ事故防止）
-      const tenant =
-        request.headers.get("x-tenant-id") || request.headers.get("tenant");
-      if (tenant) {
-        h.set("x-tenant-id", tenant);
-        h.set("tenant", tenant);
+      // 互換: x-admin-token を x-admin-key にリマップ（念のため）
+      if (h.get("x-admin-token") && !h.get("x-admin-key")) {
+        h.set("x-admin-key", h.get("x-admin-token"));
       }
 
-      const fwd = new Request(forward.toString(), {
-        method: request.method,
-        headers: h,
-        body: ["GET", "HEAD", "OPTIONS"].includes(request.method)
-          ? undefined
-          : request.body, // ボディはそのままストリームで転送
-        redirect: "manual",
-      });
-
-      const res = await fetch(fwd);
-      return new Response(res.body, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Vary": "origin",
-          "Cache-Control": "no-store",
-          "Content-Type":
-            res.headers.get("content-type") ||
-            "application/json; charset=utf-8",
-        },
-      });
+      const init = { method: request.method, headers: h };
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        init.body = request.body;
+      }
+      return fetch(target.toString(), init);
     };
 
-    // --- Routes ---
-    if (url.pathname === "/api" && request.method === "POST") return pass("/api");
-    if (url.pathname === "/diag" && request.method === "POST") return pass("/diag");
+    // 上流に中継するルート（/admin.html から使うやつ）
+    if (url.pathname === "/api"    && request.method === "POST") return pass("/api");
+    if (url.pathname === "/diag"   && request.method === "POST") return pass("/diag");
+    if (url.pathname === "/list"   && request.method === "GET")  return pass("/list");
+    if (url.pathname === "/item"   && request.method === "GET")  return pass("/item");
+    if (url.pathname === "/health" && request.method === "GET")  return pass("/health"); // 疎通チェック用
 
-    if (url.pathname === "/_debug" && request.method === "GET") {
-      const hasKey = typeof env.API_KEY === "string" && env.API_KEY.length >= 8;
-      const host = env.API_HOST || "saas.hekuijincun.workers.dev";
-      return new Response(
-        JSON.stringify({ ok: true, mode: "pages_gateway", hasKey, host }),
-        { headers: { "content-type": "application/json; charset=utf-8" } }
-      );
-    }
-
-    // --- 静的アセット（index.html / admin.html 他） ---
+    // それ以外は静的アセット（index.html, admin.html など）
     return env.ASSETS.fetch(request);
-  },
-};
+  }
+}
