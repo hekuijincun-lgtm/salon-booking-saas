@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Salon Booking – 先行登録</title>
   <style>
+    :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin:0; padding:24px; }
     .wrap { max-width: 640px; margin: 0 auto; }
     h1 { margin: 0 0 8px; }
@@ -15,72 +16,159 @@
     .muted { color:#666; font-size:13px; margin-top:8px; }
     .ok { color:#0a7c2f; font-weight:700; }
     .err { color:#c40000; font-weight:700; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    small.code { background:#f6f6f6; border:1px solid #eee; padding:2px 6px; border-radius:6px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   </style>
+  <noscript><meta http-equiv="refresh" content="0;url=about:blank"><style>body{display:none}</style></noscript>
 </head>
 <body>
   <div class="wrap">
     <h1>Salon Booking / 先行登録</h1>
-    <p class="muted">送信するとリードが保存され、/admin で見えるよ。</p>
+    <p class="muted">送信するとリードが保存され、<code>/admin</code> で見えるよ。</p>
 
-    <!-- 必須の hidden（デフォルト値付き） -->
-    <input type="hidden" id="tenant" value="salon-booking" />
+    <!-- 必須の hidden（実テナントIDとツールIDに更新済み） -->
+    <input type="hidden" id="tenant" value="t_2f3072fe13e82051" />
     <input type="hidden" id="toolId" value="tool_salon_booking_v1" />
 
-    <label>お名前</label>
-    <input id="name" placeholder="山田 太郎" required />
+    <label for="name">お名前</label>
+    <input id="name" autocomplete="name" placeholder="山田 太郎" required />
 
-    <label>メール</label>
-    <input id="email" type="email" placeholder="you@example.com" required />
+    <label for="email">メール</label>
+    <input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required />
 
-    <label>連絡チャネル</label>
+    <label for="channel">連絡チャネル</label>
     <select id="channel">
       <option value="email">Email</option>
       <option value="line">LINE</option>
       <option value="twitter">X(Twitter) DM</option>
     </select>
 
-    <label>メモ（任意）</label>
+    <label for="notes">メモ（任意）</label>
     <textarea id="notes" rows="4" placeholder="導入検討の背景など"></textarea>
 
-    <button class="primary" id="send">送信する</button>
-    <div id="status" class="muted"></div>
+    <div class="row">
+      <button class="primary" id="send">送信する</button>
+      <small id="ping" class="muted"></small>
+    </div>
+
+    <div id="status" class="muted" aria-live="polite"></div>
   </div>
 
   <script>
+    // --- 要素参照 ---
     const btn = document.getElementById('send');
     const statusEl = document.getElementById('status');
+    const pingEl = document.getElementById('ping');
 
+    // --- 起動時: API疎通チェック (/health) & 前回入力の復元 ---
+    (async () => {
+      try {
+        const r = await fetch('/health', { method: 'GET' });
+        const j = await r.json().catch(()=> ({}));
+        if (r.ok && j && j.ok) {
+          pingEl.textContent = `API Online (${j.service} ${j.version}) ✅`;
+        } else {
+          pingEl.textContent = 'API疎通に失敗… ❌';
+        }
+      } catch {
+        pingEl.textContent = 'API疎通に失敗… ❌';
+      }
+      // 前回入力を復元（軽いUX改善）
+      try {
+        const last = JSON.parse(localStorage.getItem('lead:last') || '{}');
+        if (last.name)  document.getElementById('name').value  = last.name;
+        if (last.email) document.getElementById('email').value = last.email;
+      } catch {}
+    })();
+
+    // --- UTMパラメータ取り込み（あれば保存） ---
+    function readUTM() {
+      const p = new URLSearchParams(location.search);
+      const keys = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
+      const o = {};
+      for (const k of keys) { const v = p.get(k); if (v) o[k] = v; }
+      if (document.referrer) o.referrer = document.referrer;
+      return o;
+    }
+
+    // --- バリデーション ---
+    function validate({ name, email }) {
+      if (!name || name.length < 2) return 'お名前を入力してね';
+      const okEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '');
+      if (!okEmail) return 'メールの形式が正しくないよ';
+      return null;
+    }
+
+    // --- 送信ハンドラ ---
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       statusEl.textContent = '送信中…';
 
-      const tenant = (document.getElementById('tenant')?.value || 'salon-booking').trim();
-      const toolId = (document.getElementById('toolId')?.value || 'tool_salon_booking_v1').trim();
+      const tenant = (document.getElementById('tenant')?.value || '').trim();
+      const toolId = (document.getElementById('toolId')?.value || '').trim();
       const name   = document.getElementById('name').value.trim();
       const email  = document.getElementById('email').value.trim();
       const memo   = document.getElementById('notes').value.trim();
       const channel= document.getElementById('channel').value;
 
+      const err = validate({ name, email });
+      if (err) {
+        statusEl.innerHTML = '<span class="err">' + err + '</span>';
+        btn.disabled = false;
+        return;
+      }
+      if (!tenant.startsWith('t_')) {
+        statusEl.innerHTML = '<span class="err">tenantが発行ID(t_...)になってないよ</span>';
+        btn.disabled = false;
+        return;
+      }
+
+      // 便利: 入力の一部をローカル保存
+      try { localStorage.setItem('lead:last', JSON.stringify({ name, email })); } catch {}
+
+      // 追加メタ（UTMやUA）もpayloadへ
+      const meta = readUTM();
       const body = {
         action: 'saveLead',
-        payload: { toolId, name, email, memo, channel, ua: navigator.userAgent, ts: new Date().toISOString() },
-        tenant
+        tenant, // Worker側でもヘッダから拾うが、念のためbodyにも残す
+        payload: {
+          toolId, name, email, memo, channel,
+          meta, ua: navigator.userAgent, ts: new Date().toISOString()
+        }
       };
 
       try {
         const res = await fetch('/api', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenant },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-tenant-id': tenant   // ← これが超重要（license/tenant判定）
+            // x-api-key は Pages の _worker.js 側でサーバ注入（フロントで晒さない）
+          },
           body: JSON.stringify(body),
         });
-        const json = await res.json().catch(() => ({}));
+
+        // JSONで読めなかった時も安全に扱う
+        let json = {};
+        try { json = await res.json(); } catch {}
+
         if (res.ok && json.ok !== false) {
           statusEl.innerHTML = '<span class="ok">保存完了！</span> 営業オートメの歯車、回り出したよ🎉';
+          // 軽くフォームをクリア（名前/メールは残す）
+          document.getElementById('notes').value = '';
         } else {
-          statusEl.innerHTML = '<span class="err">保存失敗…</span> ' + (json.error || ('HTTP ' + res.status));
+          const msg = json.error || ('HTTP ' + res.status);
+          statusEl.innerHTML = '<span class="err">保存失敗…</span> ' + msg;
+          // ライセンス/テナント系の定番エラーをヒント表示
+          if (msg.includes('license_inactive')) {
+            statusEl.innerHTML += '（/admin で発行した <span class="code">tenant_id</span> を hidden に入れてるか確認してね）';
+          }
+          if (msg.includes('tenant_missing')) {
+            statusEl.innerHTML += '（<span class="code">x-tenant-id</span> ヘッダが届いてない可能性）';
+          }
         }
       } catch (e) {
-        statusEl.innerHTML = '<span class="err">送信エラー</span> ' + e.message;
+        statusEl.innerHTML = '<span class="err">送信エラー</span> ' + (e?.message || e);
       } finally {
         btn.disabled = false;
       }
