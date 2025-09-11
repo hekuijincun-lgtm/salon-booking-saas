@@ -34,22 +34,44 @@
 
 <script>
   // ---- state ----
-  const tokenInput = document.getElementById('token');
+  const tokenInput  = document.getElementById('token');
   const tenantInput = document.getElementById('tenant');
-  const saveBtn = document.getElementById('save');
-  const reloadBtn = document.getElementById('reload');
-  const exportBtn = document.getElementById('export');
-  const tbody = document.querySelector('#tbl tbody');
-  const count = document.getElementById('count');
+  const saveBtn     = document.getElementById('save');
+  const reloadBtn   = document.getElementById('reload');
+  const exportBtn   = document.getElementById('export');
+  const tbody       = document.querySelector('#tbl tbody');
+  const count       = document.getElementById('count');
 
-  // 互換: 以前のADMIN_TOKENも読めるように
-  tokenInput.value = localStorage.getItem('ADMIN_KEY') || localStorage.getItem('ADMIN_TOKEN') || '';
+  // ===== 追加ポイント①：デフォルトtenant & URLクエリ対応 =====
+  const DEFAULT_TENANT = 'salon-booking';
+  const qp = new URLSearchParams(location.search);
 
+  // tokenは既存のlocalStorage or ?key=?token=
+  tokenInput.value =
+    qp.get('key') || qp.get('token') ||
+    localStorage.getItem('ADMIN_KEY') ||
+    localStorage.getItem('ADMIN_TOKEN') || '';
+
+  // tenantは localStorage or ?tenant= or 既定値
+  tenantInput.value =
+    qp.get('tenant') ||
+    localStorage.getItem('ADMIN_TENANT') ||
+    DEFAULT_TENANT;
+
+  // Enterで更新
+  [tokenInput, tenantInput].forEach(el => {
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') reloadBtn.click(); });
+  });
+
+  // 保存ボタン：キーとtenantを両方保存（←追加）
   saveBtn.onclick = () => {
-    const v = (tokenInput.value || '').trim();
-    localStorage.setItem('ADMIN_KEY', v);
-    localStorage.setItem('ADMIN_TOKEN', v); // 互換保存
+    const key = (tokenInput.value || '').trim();
+    const ten = (tenantInput.value || DEFAULT_TENANT).trim();
+    localStorage.setItem('ADMIN_KEY', key);
+    localStorage.setItem('ADMIN_TOKEN', key);      // 互換保存
+    localStorage.setItem('ADMIN_TENANT', ten);     // 追加保存
     alert('保存したよ！');
+    reloadBtn.click(); // 即反映
   };
 
   // --- helpers ---
@@ -93,7 +115,7 @@
   }
 
   reloadBtn.onclick = async () => {
-    const token = (tokenInput.value || '').trim();
+    const token  = (tokenInput.value || '').trim();
     const tenant = (tenantInput.value || '').trim();
     try {
       // 優先: /api (認証) → 失敗したら /list にフォールバック
@@ -104,8 +126,7 @@
       } else {
         items = await fetchViaList(tenant);
       }
-      // createdAt順に並べ替え
-      items.sort((a,b) => (b.ts||0) - (a.ts||0));
+      items.sort((a,b) => (b.ts||0) - (a.ts||0)); // createdAt降順
       render(items);
     } catch (e) {
       alert('取得失敗: ' + e.message);
@@ -113,7 +134,7 @@
   };
 
   exportBtn.onclick = async () => {
-    const token = (tokenInput.value || '').trim();
+    const token  = (tokenInput.value || '').trim();
     const tenant = (tenantInput.value || '').trim();
     let items = [];
     try {
