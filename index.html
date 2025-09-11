@@ -1,40 +1,90 @@
-<script>
-  const btn = document.getElementById('send');
-  const statusEl = document.getElementById('status');
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Salon Booking – 先行登録</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin:0; padding:24px; }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; }
+    label { display:block; margin:12px 0 4px; font-weight:600; }
+    input, textarea, select { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; }
+    button { margin-top:16px; padding:12px 16px; border:0; border-radius:10px; font-weight:700; cursor:pointer; }
+    .primary { background:#111; color:#fff; }
+    .muted { color:#666; font-size:13px; margin-top:8px; }
+    .ok { color:#0a7c2f; font-weight:700; }
+    .err { color:#c40000; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Salon Booking / 先行登録</h1>
+    <p class="muted">送信するとリードが保存され、/admin で見えるよ。</p>
 
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    statusEl.textContent = '送信中…';
+    <!-- 必須の hidden（デフォルト値付き） -->
+    <input type="hidden" id="tenant" value="salon-booking" />
+    <input type="hidden" id="toolId" value="tool_salon_booking_v1" />
 
-    const tenant = (document.getElementById('tenant')?.value || 'salon-booking').trim();
-    const toolId = (document.getElementById('toolId')?.value || 'tool_salon_booking_v1').trim();
-    const name   = document.getElementById('name').value.trim();
-    const email  = document.getElementById('email').value.trim();
-    const memo   = document.getElementById('notes').value.trim();   // ← サーバ側は memo を見る
-    const channel= document.getElementById('channel').value;
+    <label>お名前</label>
+    <input id="name" placeholder="山田 太郎" required />
 
-    const body = {
-      action: 'saveLead',
-      payload: { toolId, name, email, memo, channel, ua: navigator.userAgent, ts: new Date().toISOString() },
-      tenant
-    };
+    <label>メール</label>
+    <input id="email" type="email" placeholder="you@example.com" required />
 
-    try {
-      const res = await fetch('/api', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenant },
-        body: JSON.stringify(body),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (res.ok && json.ok !== false) {
-        statusEl.innerHTML = '<span class="ok">保存完了！</span> 営業オートメの歯車、回り出したよ🎉';
-      } else {
-        statusEl.innerHTML = '<span class="err">保存失敗…</span> ' + (json.error || ('HTTP ' + res.status));
+    <label>連絡チャネル</label>
+    <select id="channel">
+      <option value="email">Email</option>
+      <option value="line">LINE</option>
+      <option value="twitter">X(Twitter) DM</option>
+    </select>
+
+    <label>メモ（任意）</label>
+    <textarea id="notes" rows="4" placeholder="導入検討の背景など"></textarea>
+
+    <button class="primary" id="send">送信する</button>
+    <div id="status" class="muted"></div>
+  </div>
+
+  <script>
+    const btn = document.getElementById('send');
+    const statusEl = document.getElementById('status');
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      statusEl.textContent = '送信中…';
+
+      const tenant = (document.getElementById('tenant')?.value || 'salon-booking').trim();
+      const toolId = (document.getElementById('toolId')?.value || 'tool_salon_booking_v1').trim();
+      const name   = document.getElementById('name').value.trim();
+      const email  = document.getElementById('email').value.trim();
+      const memo   = document.getElementById('notes').value.trim();
+      const channel= document.getElementById('channel').value;
+
+      const body = {
+        action: 'saveLead',
+        payload: { toolId, name, email, memo, channel, ua: navigator.userAgent, ts: new Date().toISOString() },
+        tenant
+      };
+
+      try {
+        const res = await fetch('/api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenant },
+          body: JSON.stringify(body),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json.ok !== false) {
+          statusEl.innerHTML = '<span class="ok">保存完了！</span> 営業オートメの歯車、回り出したよ🎉';
+        } else {
+          statusEl.innerHTML = '<span class="err">保存失敗…</span> ' + (json.error || ('HTTP ' + res.status));
+        }
+      } catch (e) {
+        statusEl.innerHTML = '<span class="err">送信エラー</span> ' + e.message;
+      } finally {
+        btn.disabled = false;
       }
-    } catch (e) {
-      statusEl.innerHTML = '<span class="err">送信エラー</span> ' + e.message;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-</script>
+    });
+  </script>
+</body>
+</html>
