@@ -1,65 +1,63 @@
-// _worker.js  — Cloudflare Pages (Advanced) 用
-// 目的: /admin → /admin.html を redirect せず "rewrite" で配信
-//       SPA ルーティングは /index.html に rewrite（拡張子がないパスのみ）
-//       HTMLはキャッシュ無効化（ループ/更新遅延対策）
+// _worker.js — Cloudflare Pages (Advanced Mode)
+// 役割：
+//  - /api を専用 Worker (saas.hekuijincun.workers.dev) へプロキシ
+//  - /admin を /admin.html（なければ /admin/index.html）に rewrite
+//  - SPA ルーティングは /index.html に rewrite（拡張子なしのパスのみ）
+//  - HTMLは no-store（リダイレクト/古キャッシュ対策）
+//  - /health で稼働確認
+
+const WORKER_API_BASE = "https://saas.hekuijincun.workers.dev";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const method = request.method;
 
-    // GET/HEAD 以外はそのまま静的配信へ
-    if (method !== "GET" && method !== "HEAD") {
-      return env.ASSETS.fetch(request);
+    // --- ヘルスチェック ---
+    if (url.pathname === "/health") {
+      return json({ ok: true, where: "pages _worker.js", t: new Date().toISOString() });
     }
 
-    // --- /admin を /admin.html に "内部書き換え"（NO redirect）---
+    // --- /api を Worker へプロキシ（メソッド/ボディ/ヘッダそのまま）---
+    if (url.pathname.startsWith("/api")) {
+      const target = new URL(url.pathname + url.search, WORKER_API_BASE);
+      const req = new Request(target, request); // メソッド/ボディ/ヘッダを引き継ぐ
+      const h = new Headers(req.headers);
+      h.delete("host"); // 念のため
+      return fetch(new Request(target, { method: req.method, headers: h, body: req.body, redirect: "follow" }));
+    }
+
+    // --- /admin は /admin.html (なければ /admin/index.html) に rewrite（NO redirect）---
     if (url.pathname === "/admin" || url.pathname === "/admin/") {
-      // 1) admin.html を試す
-      let res = await env.ASSETS.fetch(
-        new Request(new URL("/admin.html", url), request)
-      );
-      // 2) もし無ければ admin/index.html にフォールバック
+      let res = await env.ASSETS.fetch(new Request(new URL("/admin.html", url), request));
       if (res.status === 404) {
-        res = await env.ASSETS.fetch(
-          new Request(new URL("/admin/index.html", url), request)
-        );
+        res = await env.ASSETS.fetch(new Request(new URL("/admin/index.html", url), request));
       }
       return noCacheHTML(res);
     }
 
-    // --- まずは通常の静的アセット配信 ---
+    // --- まず通常の静的アセット ---
     let res = await env.ASSETS.fetch(request);
-    if (res.status !== 404) {
-      // HTMLだけはキャッシュ無効化
+    if (res.status !== 404) return noCacheHTML(res);
+
+    // --- SPA フォールバック（拡張子が無いときだけ）---
+    const last = url.pathname.split("/").pop() || "";
+    if (!last.includes(".")) {
+      res = await env.ASSETS.fetch(new Request(new URL("/index.html", url), request));
       return noCacheHTML(res);
     }
 
-    // --- SPA フォールバック（拡張子が無いパスのみ）---
-    const lastSeg = url.pathname.split("/").pop() || "";
-    const looksLikeFile = lastSeg.includes(".");
-    if (!looksLikeFile) {
-      res = await env.ASSETS.fetch(
-        new Request(new URL("/index.html", url), request)
-      );
-      return noCacheHTML(res);
-    }
-
-    // 本当に無い静的ファイル（例: /foo.js 404）はそのまま返す
+    // 本当に無いファイルはそのまま 404
     return res;
   },
 };
 
-// HTMLのときだけ Cache-Control を no-store にする（308等の誤キャッシュ対策）
 function noCacheHTML(res) {
   const headers = new Headers(res.headers);
-  const ct = headers.get("content-type") || "";
-  if (ct.includes("text/html")) {
-    headers.set("Cache-Control", "no-store");
-  }
-  return new Response(res.body, {
-    status: res.status,
-    statusText: res.statusText,
-    headers,
-  });
+  const ct = (headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("text/html")) headers.set("Cache-Control", "no-store");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+function json(data, init) {
+  return new Response(JSON.stringify(data), { headers: { "content-type": "application/json", "cache-control": "no-store" }, ...init });
 }
