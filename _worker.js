@@ -1,55 +1,65 @@
-// _worker.js (Cloudflare Pages gateway)
+// _worker.js  — Cloudflare Pages (Advanced) 用
+// 目的: /admin → /admin.html を redirect せず "rewrite" で配信
+//       SPA ルーティングは /index.html に rewrite（拡張子がないパスのみ）
+//       HTMLはキャッシュ無効化（ループ/更新遅延対策）
+
 export default {
-  async fetch(req, env, ctx) {
-    const url = new URL(req.url);
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const method = request.method;
 
-    // 上流（本体 Workers）
-    const UPSTREAM = "https://saas.hekuijincun.workers.dev";
-
-    // デバッグ
-    if (url.pathname === "/_debug") {
-      return new Response(JSON.stringify({
-        ok: true,
-        mode: "pages_gateway",
-        upstream: UPSTREAM,
-        path: url.pathname,
-        method: req.method,
-        host: url.host,
-      }, null, 2), {
-        headers: { "content-type": "application/json; charset=utf-8" },
-      });
+    // GET/HEAD 以外はそのまま静的配信へ
+    if (method !== "GET" && method !== "HEAD") {
+      return env.ASSETS.fetch(request);
     }
 
-    // --- 管理UIは /admin と /admin/ の両方で常に静的 admin.html を返す（ループ防止）
-    if ((url.pathname === "/admin" || url.pathname === "/admin/") && req.method === "GET") {
-      const r = new Request(new URL("/admin.html", url.origin), req);
-      return env.ASSETS.fetch(r);
-    }
-
-    // --- 上流に中継するパス（管理APIや各種JSON系）
-    const shouldProxy =
-      url.pathname === "/api" ||
-      url.pathname === "/metrics" ||
-      url.pathname === "/health" ||
-      url.pathname === "/diag" ||
-      url.pathname === "/list" ||
-      url.pathname === "/item" ||
-      // /admin/以下の“深い”パスのみ上流へ（/admin と /admin/ は除外済み）
-      (url.pathname.startsWith("/admin/") && url.pathname !== "/admin/");
-
-    if (shouldProxy) {
-      const upstreamURL = new URL(UPSTREAM + url.pathname + url.search);
-      const hdr = new Headers(req.headers);
-      hdr.set("x-forwarded-host", url.host);
-
-      const init = { method: req.method, headers: hdr };
-      if (req.method !== "GET" && req.method !== "HEAD") {
-        init.body = await req.arrayBuffer();
+    // --- /admin を /admin.html に "内部書き換え"（NO redirect）---
+    if (url.pathname === "/admin" || url.pathname === "/admin/") {
+      // 1) admin.html を試す
+      let res = await env.ASSETS.fetch(
+        new Request(new URL("/admin.html", url), request)
+      );
+      // 2) もし無ければ admin/index.html にフォールバック
+      if (res.status === 404) {
+        res = await env.ASSETS.fetch(
+          new Request(new URL("/admin/index.html", url), request)
+        );
       }
-      return fetch(upstreamURL, init);
+      return noCacheHTML(res);
     }
 
-    // それ以外は通常の静的配信（index.html など）
-    return env.ASSETS.fetch(req);
+    // --- まずは通常の静的アセット配信 ---
+    let res = await env.ASSETS.fetch(request);
+    if (res.status !== 404) {
+      // HTMLだけはキャッシュ無効化
+      return noCacheHTML(res);
+    }
+
+    // --- SPA フォールバック（拡張子が無いパスのみ）---
+    const lastSeg = url.pathname.split("/").pop() || "";
+    const looksLikeFile = lastSeg.includes(".");
+    if (!looksLikeFile) {
+      res = await env.ASSETS.fetch(
+        new Request(new URL("/index.html", url), request)
+      );
+      return noCacheHTML(res);
+    }
+
+    // 本当に無い静的ファイル（例: /foo.js 404）はそのまま返す
+    return res;
   },
+};
+
+// HTMLのときだけ Cache-Control を no-store にする（308等の誤キャッシュ対策）
+function noCacheHTML(res) {
+  const headers = new Headers(res.headers);
+  const ct = headers.get("content-type") || "";
+  if (ct.includes("text/html")) {
+    headers.set("Cache-Control", "no-store");
+  }
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  });
 }
