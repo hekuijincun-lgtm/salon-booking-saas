@@ -1,8 +1,4 @@
 // _worker.js — Cloudflare Pages (Advanced Functions)
-// /api → https://saas.hekuijincun.workers.dev にプロキシ（APIキー＆tenant自動注入）
-// /admin → /admin.html（or /admin/index.html）へ rewrite（NO redirect）
-// SPA fallback → /index.html（拡張子なしのとき）
-// HTMLは no-store、/api 応答は CORS 付与、/health あり
 
 const WORKER_API_BASE = "https://saas.hekuijincun.workers.dev";
 const API_HEADER = "x-api-key";
@@ -12,39 +8,38 @@ export default {
     const url = new URL(request.url);
     const method = request.method;
 
-    // ---- Health check ----
+    // --- health ---
     if (url.pathname === "/health") {
       return json({ ok: true, where: "pages _worker.js", t: new Date().toISOString() });
     }
 
-    // ---- CORS preflight ----
+    // --- preflight ---
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
 
-    // ---- /api proxy → Worker ----
+    // --- /api → Worker proxy（API鍵 & tenant 自動注入）---
     if (url.pathname.startsWith("/api")) {
       const target = new URL(url.pathname + url.search, WORKER_API_BASE);
-      const h = new Headers(request.headers);
 
-      // API key 自動付与（Pagesの環境変数 API_KEY を使う）
+      const h = new Headers(request.headers);
       if (env.API_KEY) {
         if (!h.has(API_HEADER)) h.set(API_HEADER, env.API_KEY);
         if (!h.has("authorization")) h.set("authorization", `Bearer ${env.API_KEY}`);
       }
 
-      // --- tenant 決定 ---
+      // tenant 決定（ヘッダ→クエリ→ホスト名→ENV）
       let tenant = h.get("x-tenant") || url.searchParams.get("tenant");
       if (!tenant) {
-        // 例: 9bd3c776.salon-booking-saas.pages.dev → "salon-booking-saas"
-        const parts = url.hostname.split(".");
+        const parts = url.hostname.split(".");               // e.g. 5985ad81.salon-booking-saas.pages.dev
         const pagesIdx = parts.indexOf("pages");
-        if (pagesIdx > 0) tenant = parts[pagesIdx - 1];
+        if (pagesIdx > 0) tenant = parts[pagesIdx - 1];      // -> "salon-booking-saas"
       }
-      if (!tenant && env.TENANT) tenant = env.TENANT; // カスタムドメイン用フォールバック
+      if (!tenant && env.TENANT) tenant = env.TENANT;
+
       if (tenant && !h.has("x-tenant")) h.set("x-tenant", tenant);
 
-      // JSONボディに tenant を注入（未指定なら）
+      // JSONボディにも tenant を注入（未指定なら）
       let body;
       if (!["GET", "HEAD"].includes(method)) {
         const ct = (h.get("content-type") || "").toLowerCase();
@@ -68,23 +63,23 @@ export default {
       return withCors(resp, request);
     }
 
-    // ---- /admin rewrite（NO redirect）----
+    // --- /admin を絶対に rewrite（NO redirect / HEADでもGETで取得）---
     if (url.pathname === "/admin" || url.pathname === "/admin/") {
-      let res = await env.ASSETS.fetch(new Request(new URL("/admin.html", url), request));
-      if (res.status === 404) {
-        res = await env.ASSETS.fetch(new Request(new URL("/admin/index.html", url), request));
-      }
+      const getAsset = (path) =>
+        env.ASSETS.fetch(new Request(new URL(path, url), { method: "GET", headers: request.headers }));
+      let res = await getAsset("/admin.html");
+      if (res.status === 404) res = await getAsset("/admin/index.html");
       return noCacheHTML(res);
     }
 
-    // ---- 通常静的アセット ----
+    // --- 通常アセット ---
     let res = await env.ASSETS.fetch(request);
     if (res.status !== 404) return noCacheHTML(res);
 
-    // ---- SPA fallback（拡張子なしのURLのみ）----
+    // --- SPA fallback（拡張子なしのみ / HEADでもGETで取得）---
     const last = url.pathname.split("/").pop() || "";
     if (!last.includes(".")) {
-      res = await env.ASSETS.fetch(new Request(new URL("/index.html", url), request));
+      res = await env.ASSETS.fetch(new Request(new URL("/index.html", url), { method: "GET", headers: request.headers }));
       return noCacheHTML(res);
     }
 
@@ -92,6 +87,7 @@ export default {
   },
 };
 
+// ---- helpers ----
 function noCacheHTML(res) {
   const headers = new Headers(res.headers);
   const ct = (headers.get("content-type") || "").toLowerCase();
