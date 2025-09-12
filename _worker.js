@@ -39,9 +39,9 @@ export default {
         DEFAULT_TENANT;
 
       headers.set("x-tenant", tenant);
-      headers.delete("host"); // 念のため
+      headers.delete("host");
 
-      // ←←← ここが肝：body を読み取らず、そのままストリームで転送
+      // ←←← ここが肝：body を読み取らず、そのままストリーム転送
       const init = { method, headers, redirect: "manual" };
       if (!["GET", "HEAD"].includes(method)) init.body = request.body;
 
@@ -50,7 +50,7 @@ export default {
       return withCors(resp, request);
     }
 
-    // /admin は /admin.html を 200 リライト（リダイレクトしない）
+    // /admin は /admin.html を 200 リライト
     if (url.pathname === "/admin" || url.pathname === "/admin/") {
       const r = new Request(new URL("/admin.html", url), request);
       const res = await env.ASSETS.fetch(r);
