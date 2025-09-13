@@ -1,23 +1,48 @@
-// /functions/admin/login.ts (debug)
+// /functions/admin/login.ts (debug + fallback)
 type Env = { ADMIN_KEY: string; ADMIN_JWT_SECRET: string };
 
 export async function onRequest({ request, env }: { request: Request; env: Env }) {
   try {
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
-    const { key } = await request.json().catch(() => ({} as any));
-    if (!key || !tse(key, env.ADMIN_KEY)) return json({ ok: false, error: "unauthorized" }, 401);
-    if (!env.ADMIN_JWT_SECRET)       return json({ ok: false, error: "missing ADMIN_JWT_SECRET" }, 500);
+    const url = new URL(request.url);
+    const qsKey  = url.searchParams.get("key") ?? undefined;
+    const hdrKey = request.headers.get("x-admin-key") ?? undefined;
+
+    let bodyKey: string | undefined = undefined;
+    if ((request.headers.get("content-type") || "").includes("application/json")) {
+      const j = await request.json().catch(() => ({} as any));
+      bodyKey = typeof j?.key === "string" ? j.key : undefined;
+    }
+
+    const candidate = bodyKey ?? hdrKey ?? qsKey;
+    const envKey = env.ADMIN_KEY || "";
+
+    if (!candidate) {
+      return json({ ok:false, error:"missing key", hint:'send {"key":"..."} or x-admin-key header' }, 401);
+    }
+    if (!envKey) {
+      return json({ ok:false, error:"missing ADMIN_KEY" }, 500);
+    }
+    if (candidate.length !== envKey.length) {
+      return json({ ok:false, error:"length mismatch", got:candidate.length, need:envKey.length }, 401);
+    }
+    if (!tse(candidate, envKey)) {
+      return json({ ok:false, error:"mismatch" }, 401);
+    }
+    if (!env.ADMIN_JWT_SECRET) {
+      return json({ ok:false, error:"missing ADMIN_JWT_SECRET" }, 500);
+    }
 
     const now = Math.floor(Date.now() / 1000);
-    const payload = { role: "admin", iat: now, exp: now + 60 * 60 * 24 * 7 };
+    const payload = { role: "admin", iat: now, exp: now + 60 * 60 * 24 * 7 }; // 7日
     const token = await makeToken(payload, env.ADMIN_JWT_SECRET);
 
     const h = new Headers({ "content-type": "application/json; charset=utf-8" });
     h.append("set-cookie", `admin_session=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${60*60*24*7}`);
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: h });
   } catch (err: any) {
-    return json({ ok: false, error: String(err), stack: err?.stack ?? null }, 500);
+    return json({ ok:false, error:String(err), stack: err?.stack ?? null }, 500);
   }
 }
 
