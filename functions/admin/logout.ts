@@ -1,4 +1,4 @@
-// /functions/admin/logout.ts
+// /functions/admin/logout.ts — セッションCookie破棄
 export async function onRequestGet() {
   const cookie = [
     "admin_session=;",
@@ -11,15 +11,7 @@ export async function onRequestGet() {
   ].join("; ");
 
   return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Logged out</title>
-     <p>OK. <a href="/admin">Back to admin</a></p>`,
-    {
-      status: 200,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "set-cookie": cookie,
-        "cache-control": "no-store",
-      },
-    }
+    `<!doctype html><meta charset="utf-8"><p>Logged out. <a href="/admin">Back</a></p>`,
+    { status: 200, headers: { "set-cookie": cookie, "content-type": "text/html; charset=utf-8" } }
   );
 }
