@@ -1,0 +1,141 @@
+<!-- /admin/leads.html -->
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Leads 管理</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif; }
+    body { margin: 24px; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+    button, .btn { padding: 8px 12px; border-radius: 10px; border: 1px solid #9993; cursor: pointer; background: #fff2; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; border-bottom: 1px solid #9993; font-size: 14px; }
+    td.actions { white-space: nowrap; }
+    input[type="search"] { padding: 8px 10px; border-radius: 10px; border: 1px solid #9993; min-width: 220px; }
+    small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .muted { opacity: .7; }
+  </style>
+</head>
+<body>
+  <h1>Leads 管理 👩🏻‍💻</h1>
+
+  <div class="row">
+    <!-- CSV ダウンロード（POST → ファイルDL） -->
+    <form id="csvForm" method="post" action="/api?action=exportLeads">
+      <input type="hidden" name="tenant" value="salon-booking-saas" />
+      <button type="submit" class="btn">📥 CSVダウンロード</button>
+    </form>
+
+    <button id="reloadBtn">🔄 再読み込み</button>
+
+    <input id="q" type="search" placeholder="検索（名前/メール/ID 部分一致）" />
+    <span class="muted"><small class="mono">tenant=salon-booking-saas</small></span>
+
+    <a class="btn" href="/admin/logout">🚪 ログアウト</a>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>作成日時</th>
+        <th>名前</th>
+        <th>メール</th>
+        <th>ID</th>
+        <th>アクション</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"><tr><td colspan="5" class="muted">読込中…</td></tr></tbody>
+  </table>
+
+  <script>
+    const TENANT = "salon-booking-saas";
+    const tbody = document.getElementById("tbody");
+    const q = document.getElementById("q");
+    const reloadBtn = document.getElementById("reloadBtn");
+
+    let all = [];
+
+    async function listLeads() {
+      const res = await fetch("/api?action=listLeads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenant: TENANT }),
+        credentials: "include", // Cookie(admin_session)を送る
+      });
+      if (res.status === 401) {
+        tbody.innerHTML = `<tr><td colspan="5">未ログインです。<a href="/admin/">ログインページへ</a></td></tr>`;
+        return;
+      }
+      const data = await res.json();
+      all = Array.isArray(data.items) ? data.items : (data.items ? [data.items] : []);
+      render(all);
+    }
+
+    function render(list) {
+      const term = (q.value || "").trim().toLowerCase();
+      const filt = !term ? list : list.filter(x => {
+        return (x.name||"").toLowerCase().includes(term)
+            || (x.email||"").toLowerCase().includes(term)
+            || (x.id||"").toLowerCase().includes(term);
+      });
+
+      if (filt.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="muted">データがありません</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filt.map(x => {
+        const dt = x.createdAt ? new Date(x.createdAt) : null;
+        const dtDisp = dt ? dt.toLocaleString() : "-";
+        const idShort = (x.id||"").slice(0,8);
+        return `
+          <tr>
+            <td>${dtDisp}</td>
+            <td>${escapeHtml(x.name||"")}</td>
+            <td><a href="mailto:${escapeHtml(x.email||"")}">${escapeHtml(x.email||"")}</a></td>
+            <td><small class="mono" title="${escapeHtml(x.id||"")}">${escapeHtml(idShort)}</small></td>
+            <td class="actions">
+              <button data-del="${escapeAttr(x.id)}">🗑️ 削除</button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      // 削除ハンドラ
+      tbody.querySelectorAll("[data-del]").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          const id = e.currentTarget.getAttribute("data-del");
+          if (!confirm(`このリードを削除しますか？\nID: ${id}`)) return;
+          const res = await fetch("/api?action=deleteLead", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ tenant: TENANT, id })
+          });
+          if (res.ok) {
+            all = all.filter(x => x.id !== id);
+            render(all);
+          } else {
+            const t = await toTextSafe(res);
+            alert("削除に失敗しました: " + t);
+          }
+        });
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+    function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+    async function toTextSafe(res){ try{ return await res.text(); }catch{ return String(res.status); } }
+
+    q.addEventListener("input", () => render(all));
+    reloadBtn.addEventListener("click", () => listLeads());
+
+    listLeads();
+  </script>
+</body>
+</html>
