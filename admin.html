@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Admin Console</title>
+<style>
+  body{font:14px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", sans-serif; padding:24px;}
+  input,button{font:inherit;padding:8px}
+  table{border-collapse:collapse;margin-top:12px;width:100%}
+  th,td{border:1px solid #ddd;padding:6px}
+</style>
+<h1>Admin Console</h1>
+
+<section id="login">
+  <h2>Login</h2>
+  <input id="k" type="password" placeholder="ADMIN_KEY" />
+  <button id="btnLogin">Login</button>
+  <span id="msg"></span>
+</section>
+
+<section id="leads" style="display:none">
+  <h2>Leads</h2>
+  <button id="btnLoad">Reload</button>
+  <table id="tbl"><thead><tr><th>id</th><th>name</th><th>email</th><th>createdAt</th></tr></thead><tbody></tbody></table>
+  <p><button id="btnLogout">Logout</button></p>
+</section>
+
+<script>
+const $ = (s)=>document.querySelector(s);
+$("#btnLogin").onclick = async () => {
+  const key = $("#k").value.trim();
+  $("#msg").textContent = "Logging in…";
+  const r = await fetch("/admin/login", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({key})});
+  const j = await r.json().catch(()=>({}));
+  if (j.ok) { $("#login").style.display="none"; $("#leads").style.display="block"; $("#msg").textContent=""; load(); }
+  else { $("#msg").textContent = "NG"; }
+};
+
+$("#btnLogout").onclick = async () => {
+  await fetch("/admin/logout");
+  $("#leads").style.display="none"; $("#login").style.display="block";
+};
+
+$("#btnLoad").onclick = load;
+
+async function load() {
+  const r = await fetch("/api?action=listLeads", {method:"POST", headers:{ "content-type":"application/json"}, body: JSON.stringify({tenant:"salon-booking-saas"})});
+  const j = await r.json();
+  const tb = $("#tbl tbody"); tb.innerHTML = "";
+  (j.items || []).forEach(x=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${x.id||""}</td><td>${x.name||""}</td><td>${x.email||""}</td><td>${x.createdAt||""}</td>`;
+    tb.appendChild(tr);
+  });
+}
+</script>
+</html>
