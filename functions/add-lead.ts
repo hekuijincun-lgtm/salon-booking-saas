@@ -1,143 +1,64 @@
-// /functions/add-lead.ts
-export const onRequestPost = async (context: { request: Request; env: Env }) => {
-  const { request, env } = context;
-
-  try {
-    // ---- 0) レート制限（ゆるめ：同一IP 60秒に1回）
-    await rateLimit(request, env, 60);
-
-    // ---- 1) 入力受け取り
-    const ip = request.headers.get("CF-Connecting-IP") ?? "";
-    const body = await request.json().catch(() => ({} as any));
-    const tenant = (body?.tenant ?? "salon-booking-saas").trim();
-    const toolId = (body?.toolId ?? "tool_salon_booking_v1").trim();
-    const name = (body?.name ?? "").trim();
-    const emailRaw = (body?.email ?? "").trim();
-    const channel = (body?.channel ?? "").trim(); // Email/LINE など
-    const note = (body?.note ?? "").trim();
-
-    if (!name || !emailRaw) {
-      return json({ ok: false, error: "missing name/email" }, 400);
-    }
-
-    const email = normalizeEmail(emailRaw);
-
-    // ---- 2) Turnstile 検証（env.TURNSTILE_SECRET が設定されている時だけ必須）
-    const tsToken =
-      body?.cfTurnstileResponse ??
-      body?.["cf-turnstile-response"] ??
-      request.headers.get("cf-turnstile-response") ??
-      (await findTurnstileInputFromForm(request));
-
-    const verified = await verifyTurnstile(env, tsToken, ip);
-    if (!verified.ok) return json({ ok: false, error: verified.error ?? "turnstile_failed" }, 400);
-
-    // ---- 3) 重複排除 & 登録/更新（email 一意）
-    const now = new Date().toISOString();
-    const idxKey = `idx:email:${tenant}:${email}`;
-    let id = await env.LEADS.get(idxKey);
-
-    if (!id) {
-      id = crypto.randomUUID();
-      const itemKey = `lead:${tenant}:${id}`;
-      const item = { id, toolId, name, email, channel, note, tenant, createdAt: now };
-      await Promise.all([
-        env.LEADS.put(itemKey, JSON.stringify(item)),
-        env.LEADS.put(idxKey, id),
-      ]);
-      // 通知（あれば）
-      await notifySlack(env, `🆕 New lead (${tenant})\n• ${name} <${email}>\n• ch: ${channel || "-"}\n• note: ${note || "-"}`);
-      return json({ ok: true, created: true, item });
-    } else {
-      const itemKey = `lead:${tenant}:${id}`;
-      const prev = JSON.parse((await env.LEADS.get(itemKey)) || "{}");
-      const item = {
-        ...prev,
-        id,
-        toolId,
-        name: name || prev?.name,
-        email,
-        channel: channel || prev?.channel,
-        note: note || prev?.note,
-        tenant,
-        createdAt: prev?.createdAt ?? now,
-        updatedAt: now,
-      };
-      await env.LEADS.put(itemKey, JSON.stringify(item));
-      await notifySlack(env, `✏️ Lead updated (${tenant})\n• ${name} <${email}>`);
-      return json({ ok: true, created: false, item });
-    }
-  } catch (e: any) {
-    return json({ ok: false, error: "unexpected", detail: String(e?.message ?? e) }, 500);
-  }
+type LeadItem = {
+  id: string;
+  toolId: string;
+  name: string;
+  email: string;
+  channel?: string;
+  note?: string;
+  tenant: string;
+  createdAt: string;
 };
 
-// ===== ユーティリティ =====
-type Env = {
-  LEADS: KVNamespace;
-  TURNSTILE_SECRET?: string;     // ← Turnstile（サーバ側秘密鍵）
-  SLACK_WEBHOOK_URL?: string;    // ← Slack Incoming Webhook（任意）
-};
-
-function json(data: any, status = 200) {
-  return new Response(JSON.stringify(data), {
+const json = (obj: unknown, status = 200) =>
+  new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+      "access-control-allow-headers": "content-type,cf-turnstile-response",
+      "access-control-allow-methods": "POST,OPTIONS",
+      "access-control-max-age": "86400",
+    },
   });
-}
 
-function normalizeEmail(e: string) {
-  return e.toLowerCase();
-}
+export const onRequestOptions: PagesFunction = async () => json({ ok: true });
 
-async function verifyTurnstile(env: Env, token: string | null | undefined, ip: string) {
-  // サーバ側秘密鍵が無ければスキップ（導入前でも動くように）
-  if (!env.TURNSTILE_SECRET) return { ok: true as const };
-  if (!token) return { ok: false as const, error: "missing_turnstile_token" };
-
-  const form = new URLSearchParams();
-  form.set("secret", env.TURNSTILE_SECRET);
-  form.set("response", token);
-  if (ip) form.set("remoteip", ip);
-
-  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body: form,
-  });
-  const data = await r.json().catch(() => ({}));
-  return { ok: !!data?.success, error: data?.["error-codes"]?.[0] };
-}
-
-async function findTurnstileInputFromForm(request: Request) {
-  // 送信が form-urlencoded の場合に備えた保険（基本は JSON 送信を推奨）
-  const ct = request.headers.get("content-type") || "";
-  if (ct.includes("application/x-www-form-urlencoded")) {
-    const text = await request.text();
-    const p = new URLSearchParams(text);
-    return p.get("cf-turnstile-response");
-  }
-  return null;
-}
-
-async function rateLimit(request: Request, env: Env, ttlSec = 60) {
+export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   try {
-    const ip = request.headers.get("CF-Connecting-IP") ?? "0.0.0.0";
-    const key = `rl:${ip}`;
-    const hit = await env.LEADS.get(key);
-    if (hit) throw new Error("rate_limited");
-    await env.LEADS.put(key, "1", { expirationTtl: ttlSec });
+    const body = await request.json().catch(() => ({} as any));
+    const tenant = (body?.tenant ?? "").toString().trim();
+    const name = (body?.name ?? "").toString().trim();
+    const email = (body?.email ?? "").toString().toLowerCase().trim();
+    const channel = (body?.channel ?? "").toString().trim();
+    const note = (body?.note ?? "").toString().trim();
+
+    if (!tenant || !name || !email)
+      return json({ ok: false, error: "bad_request" }, 400);
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return json({ ok: false, error: "invalid_email" }, 400);
+
+    // KV 必須
+    if (!env.LEADS) return json({ ok: false, error: "no_kv" }, 500);
+
+    const id = crypto.randomUUID();
+    const item: LeadItem = {
+      id,
+      toolId: "tool_salon_booking_v1",
+      name,
+      email,
+      channel,
+      note,
+      tenant,
+      createdAt: new Date().toISOString(),
+    };
+
+    const key = `t_${tenant}:lead:${email}`;
+    await env.LEADS.put(key, JSON.stringify(item), { metadata: { tenant, email } });
+
+    return json({ ok: true, item });
   } catch (e) {
-    if ((e as any).message === "rate_limited") throw e;
+    return json({ ok: false, error: "server_error" }, 500);
   }
-}
-
-async function notifySlack(env: Env, text: string) {
-  if (!env.SLACK_WEBHOOK_URL) return;
-  try {
-    await fetch(env.SLACK_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-  } catch (_) {}
-}
+};
