@@ -1,51 +1,74 @@
-export async function onRequest(context) {
-  const { env, request } = context;
-  const noStore = {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store, no-cache, max-age=0, must-revalidate',
-    pragma: 'no-cache',
-    'x-store': 'd1',
-  };
+// functions/add-lead.ts
+// 公開エンドポイント（トークン不要）: リードを UPSERT で保存
+// 前提: D1 バインディング名は "DB"（env.DB）
 
-  if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ ok: false, error: 'POST only' }), { status: 405, headers: noStore });
+type Env = {
+  DB: D1Database;
+};
+
+const json = (obj: unknown, status = 200) =>
+  new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+  try {
+    // 0) D1 バインディング存在チェック
+    if (!env.DB || typeof env.DB.prepare !== "function") {
+      return json(
+        { ok: false, error: "d1_binding_missing", need: "Functions > D1 binding name=DB" },
+        500
+      );
+    }
+
+    // 1) 入力をパース
+    const body = await request.json().catch(() => null) as any;
+    if (!body) return json({ ok: false, error: "bad_json" }, 400);
+
+    const tenant  = String(body.tenant || "").trim();
+    const name    = String(body.name   || "").trim();
+    const email   = String(body.email  || "").trim().toLowerCase();
+    const channel = String(body.channel|| "Email").trim();
+    const note    = String(body.note   || "").trim();
+
+    if (!tenant || !name || !email) {
+      return json({ ok: false, error: "bad_request_missing_fields" }, 400);
+    }
+
+    // 2) 初回デプロイでも落ちないように作表（IF NOT EXISTS）
+    //    マルチテナント想定で (tenant, email) をユニークに
+    await env.DB.exec(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id TEXT PRIMARY KEY,
+        tenant TEXT NOT NULL,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        channel TEXT,
+        note TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(tenant, email)
+      );
+    `);
+
+    // 3) UPSERT（tenant+email をキーに上書き）
+    await env.DB
+      .prepare(
+        `
+        INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
+        VALUES (hex(randomblob(16)), ?, ?, ?, ?, ?, unixepoch())
+        ON CONFLICT(tenant, email) DO UPDATE SET
+          name=excluded.name,
+          channel=excluded.channel,
+          note=excluded.note,
+          created_at=unixepoch()
+        `
+      )
+      .bind(tenant, name, email, channel, note)
+      .run();
+
+    return json({ ok: true });
+  } catch (e: any) {
+    return json({ ok: false, error: "exception", detail: String(e) }, 500);
   }
-
-  let body = {};
-  try { body = await request.json(); } catch (_) {}
-
-  const id = crypto.randomUUID();
-  const {
-    tenant,
-    toolId = 'tool_salon_booking_v1',
-    name = '',
-    email = '',
-    channel = '',
-    memo = body.memo ?? body.note ?? '',
-  } = body;
-
-  // 1) テーブル確保（初回のみ）
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS leads (
-      id TEXT PRIMARY KEY,
-      tenant TEXT NOT NULL,
-      toolId TEXT,
-      name TEXT,
-      email TEXT,
-      channel TEXT,
-      memo TEXT,
-      createdAt TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-    );
-  `).run();
-
-  // 2) 追加
-  await env.DB.prepare(`
-    INSERT INTO leads (id,tenant,toolId,name,email,channel,memo,createdAt)
-    VALUES (?1,?2,?3,?4,?5,?6,?7,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-  `).bind(id, tenant, toolId, name, email, channel, memo).run();
-
-  return new Response(JSON.stringify({
-    ok: true,
-    item: { id, tenant, toolId, name, email, channel, createdAt: new Date().toISOString() }
-  }), { status: 200, headers: noStore });
-}
+};
