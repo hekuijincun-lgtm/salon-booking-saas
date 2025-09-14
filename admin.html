@@ -1,137 +1,177 @@
-<!-- /admin.html -->
+<!-- /ui/admin.html -->
 <!doctype html>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Admin – Leads</title>
-<style>
-  body{font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;margin:24px;color:#111}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  input,button,select{padding:10px 12px;border:1px solid #00000022;border-radius:10px;font-size:14px}
-  button{background:#111;color:#fff;cursor:pointer}
-  table{border-collapse:collapse;width:100%;margin-top:16px}
-  th,td{border-bottom:1px solid #0000001a;padding:8px 6px;text-align:left;font-size:14px}
-  .muted{color:#666}
-  .ok{color:#19c37d}.err{color:#ef4444}
-</style>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Leads 管理</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+    body { background:#fafafa; margin:0; }
+    .wrap { max-width: 1000px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    .card { background:#fff; border:1px solid #eee; border-radius:12px; padding:16px; box-shadow:0 2px 10px rgba(0,0,0,.03); }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    button, input, select { font: inherit; }
+    button { padding:8px 12px; border-radius:10px; border:1px solid #ddd; background:#111; color:#fff; cursor:pointer; }
+    button.ghost { background:#fff; color:#111; }
+    table { width:100%; border-collapse: collapse; margin-top:12px; }
+    th, td { border-bottom:1px solid #eee; padding:10px 8px; text-align:left; }
+    th { background:#fafafa; }
+    .muted { color:#999; font-size:12px; }
+    .right { margin-left:auto; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #ddd; border-radius:999px; font-size:12px; }
+    .toast { position:fixed; right:16px; bottom:16px; background:#111; color:#fff; padding:10px 14px; border-radius:10px; opacity:0; transform:translateY(8px); transition:all .2s; }
+    .toast.show { opacity:1; transform:translateY(0); }
+    dialog { border:none; border-radius:12px; padding:20px; }
+    dialog::backdrop { background:rgba(0,0,0,.2); }
+    input[type="password"] { width: 320px; padding:8px 10px; border-radius:10px; border:1px solid #ccc;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Leads 管理 <span id="tenant" class="pill">tenant: salon-booking-saas</span></h1>
 
-<h1>Admin / Leads</h1>
+    <div class="card">
+      <div class="row">
+        <button id="btn-refresh">再読み込み</button>
+        <button id="btn-del" class="ghost">選択を削除</button>
+        <button id="btn-export" class="right">CSVエクスポート</button>
+        <button id="btn-logout" class="ghost">ログアウト</button>
+      </div>
+      <table id="grid">
+        <thead>
+          <tr>
+            <th style="width:36px"><input type="checkbox" id="check-all"></th>
+            <th>名前</th><th>メール</th><th>チャネル</th><th>メモ</th><th>作成</th><th>ID</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="empty" class="muted" style="display:none;margin-top:8px;">データはまだありません。</div>
+    </div>
+  </div>
 
-<div class="row">
-  <input id="adminKey" type="password" placeholder="ADMIN_KEY を入力してログイン" style="min-width:320px" />
-  <button id="loginBtn">ログイン</button>
-  <button id="logoutBtn">ログアウト</button>
-  <span id="state" class="muted">未確認</span>
-</div>
+  <dialog id="dlg-login">
+    <form method="dialog">
+      <h3>管理ログイン</h3>
+      <p class="muted">ADMIN_KEY を入力してください。</p>
+      <p><input id="admin-key" type="password" placeholder="ADMIN_KEY" autocomplete="current-password" /></p>
+      <div class="row">
+        <button id="do-login">ログイン</button>
+        <button value="cancel" class="ghost">キャンセル</button>
+      </div>
+    </form>
+  </dialog>
 
-<div class="row" style="margin-top:12px">
-  <button id="reloadBtn">再読込</button>
-  <button id="csvBtn">CSVエクスポート</button>
-  <span class="muted">tenant:</span>
-  <input id="tenant" value="salon-booking-saas" style="width:240px" />
-</div>
+  <div id="toast" class="toast">done</div>
 
-<table id="tbl" style="display:none">
-  <thead><tr><th>id</th><th>name</th><th>email</th><th>toolId</th><th>createdAt</th><th></th></tr></thead>
-  <tbody></tbody>
-</table>
+  <script>
+    const BASE = location.origin;
+    const TENANT = "salon-booking-saas";
+    const grid = document.querySelector("#grid tbody");
+    const toast = document.querySelector("#toast");
+    const dlg = document.querySelector("#dlg-login");
+    const $ = (s)=>document.querySelector(s);
 
-<script>
-const $ = (s)=>document.querySelector(s);
-const state = $("#state");
-const TBL = $("#tbl");
-const TB = TBL.querySelector("tbody");
+    function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'),1800); }
 
-async function jsonPost(url, body, headers = {}) {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body || {}),
-    credentials: "include",
-  });
-  const t = await r.text();
-  try { return { status: r.status, data: JSON.parse(t) }; }
-  catch { return { status: r.status, data: t }; }
-}
+    async function api(action, body) {
+      const r = await fetch(`/api?action=${encodeURIComponent(action)}`, {
+        method: "POST",
+        credentials: "include", // ← Cookie を送る
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenant: TENANT, ...(body||{}) }),
+      });
+      if (r.status === 401) throw new Error("unauthorized");
+      if (!r.ok) throw new Error(`http_${r.status}`);
+      return await r.json();
+    }
 
-async function check() {
-  const tenant = $("#tenant").value.trim();
-  const { status, data } = await jsonPost("/api?action=listLeads", { tenant });
-  if (status === 200 && data?.ok) {
-    state.textContent = "ログイン済み";
-    state.className = "ok";
-    render(Array.isArray(data.items) ? data.items : (data.items ? [data.items] : []));
-  } else {
-    state.textContent = "未ログイン";
-    state.className = "err";
-    render([]);
-  }
-}
+    async function tryLoad() {
+      try {
+        const data = await api("listLeads");
+        render(data.items ? (Array.isArray(data.items)? data.items : [data.items]) : []);
+      } catch(e) {
+        if(String(e.message).includes("unauthorized")) {
+          dlg.showModal();
+        } else {
+          showToast("読み込み失敗");
+        }
+      }
+    }
 
-function render(items) {
-  TB.innerHTML = "";
-  if (!items || items.length === 0) {
-    TBL.style.display = "none";
-    return;
-  }
-  TBL.style.display = "";
-  for (const it of items) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="muted">${it.id || ""}</td>
-      <td>${it.name || ""}</td>
-      <td>${it.email || ""}</td>
-      <td class="muted">${it.toolId || ""}</td>
-      <td class="muted">${it.createdAt || ""}</td>
-      <td><button data-id="${it.id}">削除</button></td>`;
-    TB.appendChild(tr);
-  }
-}
+    function render(items){
+      grid.innerHTML = "";
+      if(!items?.length){ $("#empty").style.display="block"; return; }
+      $("#empty").style.display="none";
+      for(const it of items){
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><input type="checkbox" data-id="${it.id}"></td>
+          <td>${escapeHtml(it.name||"")}</td>
+          <td>${escapeHtml(it.email||"")}</td>
+          <td>${escapeHtml(it.channel||"")}</td>
+          <td>${escapeHtml(it.note||"")}</td>
+          <td class="muted">${escapeHtml((it.createdAt||"").replace("T"," ").replace("Z",""))}</td>
+          <td class="muted">${it.id}</td>
+        `;
+        grid.appendChild(tr);
+      }
+    }
 
-$("#loginBtn").onclick = async () => {
-  const key = $("#adminKey").value;
-  if (!key) return alert("ADMIN_KEY を入力してね");
-  const r = await fetch("/admin/login", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-admin-key": key },
-    credentials: "include",
-    body: JSON.stringify({ key }),
-  });
-  if (r.ok) { $("#adminKey").value = ""; await check(); }
-  else { state.textContent = "ログイン失敗"; state.className = "err"; }
-};
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-$("#logoutBtn").onclick = async () => {
-  await fetch("/admin/logout", { credentials: "include" });
-  await check();
-};
+    // --- events
+    $("#btn-refresh").onclick = tryLoad;
 
-$("#reloadBtn").onclick = check;
+    $("#btn-export").onclick = async () => {
+      try {
+        const r = await fetch(`/api?action=exportLeads`, {
+          method: "POST", credentials: "include",
+          headers: {"content-type":"application/json"},
+          body: JSON.stringify({ tenant: TENANT })
+        });
+        if(r.status===401) throw new Error("unauthorized");
+        const blob = await r.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "leads.csv";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch(e){ if(String(e).includes("unauthorized")) dlg.showModal(); }
+    };
 
-$("#csvBtn").onclick = async () => {
-  const tenant = $("#tenant").value.trim();
-  const r = await fetch("/api?action=exportLeads", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ tenant }),
-    credentials: "include",
-  });
-  if (!r.ok) return alert("エクスポート失敗");
-  const blob = await r.blob();
-  const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement("a"), { href: url, download: "leads.csv" });
-  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-};
+    $("#btn-del").onclick = async () => {
+      const ids = [...document.querySelectorAll('tbody input[type="checkbox"]:checked')].map(x=>x.dataset.id);
+      if(!ids.length) return showToast("選択がありません");
+      if(!confirm(`${ids.length} 件削除します。よろしいですか？`)) return;
+      for(const id of ids){
+        await api("deleteLead", { id });
+      }
+      showToast("削除しました");
+      await tryLoad();
+    };
 
-TB.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-id]");
-  if (!btn) return;
-  const id = btn.getAttribute("data-id");
-  const tenant = $("#tenant").value.trim();
-  if (!confirm(`削除しますか？\n${id}`)) return;
-  const r = await jsonPost("/api?action=deleteLead", { tenant, id });
-  if (r.status === 200 && r.data?.ok) check();
-  else alert("削除に失敗しました");
-});
+    $("#btn-logout").onclick = async()=>{ await fetch("/admin/logout", { credentials:"include" }); showToast("ログアウトしました"); setTimeout(()=>location.reload(), 500); };
 
-check();
-</script>
+    $("#check-all").onchange = (e)=>{
+      const c = e.currentTarget.checked;
+      document.querySelectorAll('tbody input[type="checkbox"]').forEach(x=>x.checked=c);
+    };
+
+    $("#do-login").onclick = async (ev) => {
+      ev.preventDefault();
+      const key = (document.querySelector("#admin-key") as HTMLInputElement).value.trim();
+      if(!key) return;
+      const r = await fetch("/admin/login", { method:"POST", credentials:"include", headers: { "x-admin-key": key } });
+      if(!r.ok){ showToast("認証失敗"); return; }
+      dlg.close();
+      showToast("ログインしました");
+      await tryLoad();
+    };
+
+    tryLoad();
+  </script>
+</body>
+</html>
