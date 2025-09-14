@@ -1,4 +1,8 @@
-// /functions/health.ts
-export async function onRequest() {
-  return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
-}
+export const onRequestGet: PagesFunction = async () =>
+  new Response("ok", {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+
