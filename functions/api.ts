@@ -24,12 +24,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
 
   const apiKey   = getApiKey(env);
   const adminKey = getAdminKey(env);
-
-  const isApi   = !!apiKey   && auth === `Bearer ${apiKey}`;
-  const isAdmin = !!adminKey && auth === `Bearer ${adminKey}`;
-
-  // Admin は API の上位互換として扱う
-  const hasApi = isApi || isAdmin;
+  const isApi    = !!apiKey   && auth === `Bearer ${apiKey}`;
+  const isAdmin  = !!adminKey && auth === `Bearer ${adminKey}`;
+  const hasApi   = isApi || isAdmin; // ← Admin は API の上位互換
 
   let body: any = null;
   if (["POST","PUT","PATCH"].includes(method)) body = await request.json().catch(() => null);
@@ -51,11 +48,9 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
       const channel = String(body?.channel|| "Email").trim();
       const note    = String(body?.note   || "").trim();
       if (!tenant || !name || !email) return json({ ok:false, error:"bad_request_missing_fields" }, 400);
-
       await env.DB.prepare(
         "INSERT INTO leads (id, tenant, name, email, channel, note, created_at) VALUES (hex(randomblob(16)), ?, ?, ?, ?, ?, unixepoch()) ON CONFLICT(tenant, email) DO UPDATE SET name=excluded.name, channel=excluded.channel, note=excluded.note, created_at=unixepoch()"
       ).bind(tenant, name, email, channel, note).run();
-
       return json({ ok:true });
     }
 
