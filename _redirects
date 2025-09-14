@@ -1,2 +1,11 @@
-/admin      /admin.html   200
-/*          /index.html   200
+# 管理UIだけショートカット
+/admin            /ui/admin.html   200
+
+# ←ここが超重要：Functions へのパスはそのまま通す（絶対に別ページへリライトしない）
+/admin/*          /admin/:splat    200
+/api/*            /api/:splat      200
+/health           /health          200
+/add-lead         /add-lead        200
+
+# （任意）フロントのSPAにしたい時だけ、最後に置く
+# /*                /index.html      200
