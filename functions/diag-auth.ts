@@ -1,29 +1,54 @@
-// functions/diag-auth.ts
-export const onRequestGet: PagesFunction = async ({ request, env }) => {
-  const norm = (s: string) =>
-    (s || "").replace(/^\s*Bearer\s+/i, "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+// /functions/diag-auth.ts
+export interface Env {
+  API_KEY?: string; API?: string; API_TOKEN?: string;
+  ADMIN_TOKEN?: string; ADMIN_KEY?: string;
+}
 
-  const authRaw = request.headers.get("authorization") || request.headers.get("x-api-key") || "";
-  const auth = norm(authRaw);
+const cors = (req: Request) => ({
+  "access-control-allow-origin": req.headers.get("origin") || "*",
+  "access-control-allow-headers": "authorization,content-type,x-api-key",
+  "access-control-allow-methods": "GET,OPTIONS",
+});
+const json = (req: Request, body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...cors(req) } });
 
-  const get = (k: string) => {
-    const v = (env as any)[k];
-    return typeof v === "string" ? norm(v) : "";
-  };
+const vals = (env: Env, ks: string[]) => ks.map(k => (env as any)[k] as string | undefined).filter(Boolean).map(s => s!.trim());
+const apiVars   = (env: Env) => vals(env, ["API_KEY","API","API_TOKEN"]);
+const adminVars = (env: Env) => vals(env, ["ADMIN_TOKEN","ADMIN_KEY"]);
 
-  const apiVars   = ["API_KEY", "API", "API_TOKEN"].map(k => [k, get(k)]).filter(([,v]) => v);
-  const adminVars = ["ADMIN_TOKEN", "ADMIN_KEY"].map(k => [k, get(k)]).filter(([,v]) => v);
+const readToken = (req: Request) => {
+  const a = req.headers.get("authorization");
+  if (a && /^bearer\s+/i.test(a)) return a.replace(/^bearer\s+/i,'').trim();
+  const x = req.headers.get("x-api-key");
+  return (x && x.trim()) || null;
+};
 
-  const match = (vars: [string,string][]) => (vars.find(([,v]) => v === auth)?.[0] || "");
+export const onRequestOptions: PagesFunction<Env> = async ({ request }) =>
+  new Response(null, { status: 204, headers: cors(request) });
 
-  return new Response(JSON.stringify({
+export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
+  const REQUIRE_ADMIN = true; // ← 必須
+  const token = readToken(request);
+  const hasApi = apiVars(env).length > 0;
+  const hasAdmin = adminVars(env).length > 0;
+
+  if (REQUIRE_ADMIN) {
+    const ok = token && adminVars(env).some(v => v === token);
+    if (!ok) return json(request, { ok: false, error: "unauthorized", need: "admin" }, 401);
+  }
+
+  // ここまで来たら表示
+  const apiList   = apiVars(env).map(v => ["API_KEY", v.length] as [string, number]);
+  const adminList = adminVars(env).map(v => ["ADMIN_TOKEN", v.length] as [string, number]);
+  const apiMatch   = token && apiVars(env).some(v => v === token) ? "API_KEY" : "";
+  const adminMatch = token && adminVars(env).some(v => v === token) ? "ADMIN_TOKEN" : "";
+
+  return json(request, {
     ok: true,
-    hasApi:   apiVars.length > 0,
-    hasAdmin: adminVars.length > 0,
-    authPresent: !!auth,
-    apiVars:   apiVars.map(([k,v]) => [k, v.length]),
-    adminVars: adminVars.map(([k,v]) => [k, v.length]),
-    apiMatch:   match(apiVars),
-    adminMatch: match(adminVars),
-  }), { headers: { "content-type": "application/json" }});
+    hasApi, hasAdmin,
+    authPresent: Boolean(token),
+    apiVars: apiList,
+    adminVars: adminList,
+    apiMatch, adminMatch,
+  });
 };
