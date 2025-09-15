@@ -1,54 +1,51 @@
-// /functions/diag-auth.ts
-export interface Env {
+interface Env {
   API_KEY?: string; API?: string; API_TOKEN?: string;
-  ADMIN_TOKEN?: string; ADMIN_KEY?: string;
+  ADMIN_TOKEN?: string; ADMIN_KEY?: string; ADMIN?: string;
 }
 
-const cors = (req: Request) => ({
-  "access-control-allow-origin": req.headers.get("origin") || "*",
-  "access-control-allow-headers": "authorization,content-type,x-api-key",
-  "access-control-allow-methods": "GET,OPTIONS",
-});
-const json = (req: Request, body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...cors(req) } });
+function json(obj: unknown, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
 
-const vals = (env: Env, ks: string[]) => ks.map(k => (env as any)[k] as string | undefined).filter(Boolean).map(s => s!.trim());
-const apiVars   = (env: Env) => vals(env, ["API_KEY","API","API_TOKEN"]);
-const adminVars = (env: Env) => vals(env, ["ADMIN_TOKEN","ADMIN_KEY"]);
+function readToken(req: Request): string | null {
+  const h = req.headers;
+  const auth = h.get("authorization") || h.get("Authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return h.get("x-api-key") || h.get("X-API-KEY");
+}
 
-const readToken = (req: Request) => {
-  const a = req.headers.get("authorization");
-  if (a && /^bearer\s+/i.test(a)) return a.replace(/^bearer\s+/i,'').trim();
-  const x = req.headers.get("x-api-key");
-  return (x && x.trim()) || null;
-};
+export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
+  const t = readToken(request);
 
-export const onRequestOptions: PagesFunction<Env> = async ({ request }) =>
-  new Response(null, { status: 204, headers: cors(request) });
-
-export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  const REQUIRE_ADMIN = true; // ← 必須
-  const token = readToken(request);
-  const hasApi = apiVars(env).length > 0;
-  const hasAdmin = adminVars(env).length > 0;
-
-  if (REQUIRE_ADMIN) {
-    const ok = token && adminVars(env).some(v => v === token);
-    if (!ok) return json(request, { ok: false, error: "unauthorized", need: "admin" }, 401);
+  const apiVars: [string, number][] = [];
+  for (const k of ["API_KEY", "API", "API_TOKEN"] as const) {
+    const v = env[k];
+    if (v) apiVars.push([k, v.length]);
   }
 
-  // ここまで来たら表示
-  const apiList   = apiVars(env).map(v => ["API_KEY", v.length] as [string, number]);
-  const adminList = adminVars(env).map(v => ["ADMIN_TOKEN", v.length] as [string, number]);
-  const apiMatch   = token && apiVars(env).some(v => v === token) ? "API_KEY" : "";
-  const adminMatch = token && adminVars(env).some(v => v === token) ? "ADMIN_TOKEN" : "";
+  const adminVars: [string, number][] = [];
+  for (const k of ["ADMIN_TOKEN", "ADMIN_KEY", "ADMIN"] as const) {
+    const v = env[k];
+    if (v) adminVars.push([k, v.length]);
+  }
 
-  return json(request, {
+  let apiMatch = "", adminMatch = "";
+  if (t) {
+    for (const [k] of apiVars) if ((env as any)[k] === t) apiMatch = k;
+    for (const [k] of adminVars) if ((env as any)[k] === t) adminMatch = k;
+  }
+
+  return json({
     ok: true,
-    hasApi, hasAdmin,
-    authPresent: Boolean(token),
-    apiVars: apiList,
-    adminVars: adminList,
-    apiMatch, adminMatch,
+    hasApi: apiVars.length > 0,
+    hasAdmin: adminVars.length > 0,
+    authPresent: !!t,
+    apiVars,
+    adminVars,
+    apiMatch,
+    adminMatch,
   });
 };
