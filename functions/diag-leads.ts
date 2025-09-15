@@ -1,60 +1,40 @@
-// functions/diag-leads.ts
-// 診断用の簡易一覧（Adminトークン必須）: GET /diag-leads?tenant=xxx
-// 前提: D1 バインディング名 "DB"、環境変数 "ADMIN_TOKEN"
-
-type Env = {
+interface Env {
   DB: D1Database;
-  ADMIN_TOKEN: string;
-};
+  ADMIN_TOKEN?: string; ADMIN_KEY?: string; ADMIN?: string;
+}
 
-const json = (obj: unknown, status = 200) =>
-  new Response(JSON.stringify(obj), {
+function json(obj: unknown, status = 200) {
+  return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
 
-export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
-  // 認証（固定ベアラー）
-  const need = "Bearer " + (env.ADMIN_TOKEN || "");
-  const got = request.headers.get("authorization") || "";
-  if (!env.ADMIN_TOKEN || got !== need) {
-    return json({ ok: false, error: "unauthorized", need: "admin" }, 401);
-  }
+function readToken(req: Request): string | null {
+  const h = req.headers;
+  const auth = h.get("authorization") || h.get("Authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return h.get("x-api-key") || h.get("X-API-KEY");
+}
 
-  try {
-    if (!env.DB || typeof env.DB.prepare !== "function") {
-      return json({ ok: false, error: "d1_binding_missing" }, 500);
-    }
+function getAdminSecret(env: Env): string | null {
+  return env.ADMIN_TOKEN || env.ADMIN_KEY || env.ADMIN || null;
+}
 
-    const url = new URL(request.url);
-    const tenant = (url.searchParams.get("tenant") || "salon-booking-saas").trim();
+export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
+  const token = readToken(request);
+  const admin = getAdminSecret(env);
+  if (!token || !admin || token !== admin) return json({ ok: false, error: "unauthorized", need: "admin" }, 401);
 
-    // 表が無いケースでもエラーにせず空配列を返したいので存在確認→無ければ空返却
-    const tableCheck = await env.DB
-      .prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name='leads'`
-      )
-      .all();
+  const url = new URL(request.url);
+  const tenant = url.searchParams.get("tenant") || "";
 
-    if (!tableCheck?.results?.length) {
-      return json({ ok: true, items: [] });
-    }
+  const { results } = await env.DB.prepare(
+    `SELECT id, tenant, name, email, channel, note, created_at
+       FROM leads
+      WHERE (?1 = '' OR tenant = ?1)
+      ORDER BY created_at DESC`
+  ).bind(tenant).all();
 
-    const { results } = await env.DB
-      .prepare(
-        `
-        SELECT id, tenant, name, email, channel, note, created_at
-        FROM leads
-        WHERE tenant = ?
-        ORDER BY created_at DESC
-        LIMIT 100
-        `
-      )
-      .bind(tenant)
-      .all();
-
-    return json({ ok: true, items: results || [] });
-  } catch (e: any) {
-    return json({ ok: false, error: "exception", detail: String(e) }, 500);
-  }
+  return json({ ok: true, items: results || [] });
 };
