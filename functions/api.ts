@@ -1,11 +1,12 @@
-// functions/api.ts（最小・可視化・自己修復つき）
-const BUILD = "v2025-09-15-verify-01";
+// functions/api.ts
+// Pages Functions (GET/POST/OPTIONS全部OK) + ビルド表示 + D1自己診断 + 例外安全化
+const BUILD = "v2025-09-15-verify-db-02";
 
 interface Env {
-  DB: D1Database;
+  DB?: D1Database;            // ← PagesのD1 Binding名は "DB" に合わせる
   API_KEY?: string;
   ADMIN_TOKEN?: string;
-  ADMIN_KEY?: string;
+  ADMIN_KEY?: string;         // 互換
 }
 
 type JsonInit = ResponseInit & { headers?: Record<string,string> };
@@ -21,11 +22,11 @@ const json = (data:any, init:JsonInit={}) =>
       ...(init.headers||{})
     }
   });
-const bad = (m:string)=> json({ok:false,error:m}, {status:400});
-const una = (m="unauthorized")=> json({ok:false,error:m}, {status:401});
+const bad = (m:string)=> json({ok:false,error:m,build:BUILD}, {status:400});
+const una = (m="unauthorized")=> json({ok:false,error:m,build:BUILD}, {status:401});
 
 const qp = (u:URL,k:string)=> (u.searchParams.get(k)||"").trim();
-const h = (r:Request,n:string)=> (r.headers.get(n)||r.headers.get(n.toLowerCase())||"").trim();
+const h  = (r:Request,n:string)=> (r.headers.get(n)||r.headers.get(n.toLowerCase())||"").trim();
 const bearer = (r:Request)=>{ const a=h(r,"authorization"); const m=/^Bearer\s+(.+)$/.exec(a); return m?m[1].trim():""; };
 const pick = (r:Request)=> bearer(r) || h(r,"x-api-key") || h(r,"x-admin-key");
 const norm = (s?:string)=> (s||"").replace(/\s+/g,"");
@@ -44,8 +45,15 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
   };
 }});
 
-// D1 schema（冪等・軽量）
+// === D1 安全ユーティリティ ===
+function assertDB(env:Env){
+  // D1未バインドだと "1101" 落ちを起こしやすいので明示的に検査
+  if (!env.DB || typeof (env.DB as any).exec !== "function") {
+    throw new Error("D1 binding 'DB' is missing. Go to Pages > Settings > Functions > D1 bindings and add 'DB' for both Production & Preview.");
+  }
+}
 async function ensureSchema(env:Env){
+  assertDB(env);
   const sql = `
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY,
@@ -58,14 +66,21 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_email ON leads (tenant, email);
 `;
-  await env.DB.exec(sql);
+  await env.DB!.exec(sql);
+}
+async function dbPing(env:Env){
+  assertDB(env);
+  const r = await env.DB!.prepare("SELECT 1 as ok").all();
+  return r.results?.[0]?.ok === 1;
 }
 async function listTables(env:Env){
-  const t = await env.DB.prepare(`SELECT name, sql FROM sqlite_schema WHERE type='table' ORDER BY name`).all();
-  const i = await env.DB.prepare(`SELECT name, tbl_name, sql FROM sqlite_schema WHERE type='index' ORDER BY name`).all();
+  assertDB(env);
+  const t = await env.DB!.prepare(`SELECT name, sql FROM sqlite_schema WHERE type='table' ORDER BY name`).all();
+  const i = await env.DB!.prepare(`SELECT name, tbl_name, sql FROM sqlite_schema WHERE type='index' ORDER BY name`).all();
   return { tables:(t.results||[]), indexes:(i.results||[]) };
 }
 
+// === メインハンドラ ===
 const handler: PagesFunction<Env> = async (ctx) => {
   const { request, env } = ctx;
   const url = new URL(request.url);
@@ -74,7 +89,7 @@ const handler: PagesFunction<Env> = async (ctx) => {
   if (method==="OPTIONS") return json({ok:true,preflight:true,build:BUILD},{status:204});
   if (!action) return bad("missing action");
 
-  const actions = ["__actions__","__build__","__echo__","lead.add","lead.list","admin.d1.tables","admin.d1.migrate"];
+  const actions = ["__actions__","__build__","__echo__","__diag.db","lead.add","lead.list","admin.d1.tables","admin.d1.migrate"];
 
   try {
     switch (action) {
@@ -87,13 +102,27 @@ const handler: PagesFunction<Env> = async (ctx) => {
         return json({ok:true,action,raw,method,build:BUILD});
       }
 
+      case "__diag.db": {
+        try {
+          const present = !!env.DB;
+          let ping = false, note = "";
+          if (present) {
+            try { ping = await dbPing(env) } catch (e:any) { note = String(e?.message||e) }
+          }
+          return json({ok:true, present, ping, note, build:BUILD});
+        } catch (e:any) {
+          return json({ok:false, error:String(e?.message||e), where:"__diag.db", build:BUILD}, {status:500});
+        }
+      }
+
+      // ===== API =====
       case "lead.add": {
         if (!okApi(env, request)) return una();
-        await ensureSchema(env);
         const b = await bodyOrQuery(request,url).parse();
         if (!b.tenant || !b.name || !b.email) return bad("missing tenant/name/email");
         try {
-          await env.DB.prepare(
+          await ensureSchema(env);
+          await env.DB!.prepare(
             `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
           ).bind(crypto.randomUUID(), b.tenant, b.name, b.email, b.channel, b.note, Date.now()).run();
@@ -107,35 +136,50 @@ const handler: PagesFunction<Env> = async (ctx) => {
 
       case "lead.list": {
         if (!okApi(env, request)) return una();
-        await ensureSchema(env);
-        const b = await bodyOrQuery(request,url).parse();
-        const stmt = b.tenant
-          ? env.DB.prepare(`SELECT id,tenant,name,email,channel,note,created_at FROM leads WHERE tenant=?1 ORDER BY created_at DESC`).bind(b.tenant)
-          : env.DB.prepare(`SELECT id,tenant,name,email,channel,note,created_at FROM leads ORDER BY created_at DESC LIMIT 100`);
-        const rows = await stmt.all();
-        return json({ok:true,items:rows.results||[],method,build:BUILD});
+        try {
+          await ensureSchema(env);
+          const b = await bodyOrQuery(request,url).parse();
+          const stmt = b.tenant
+            ? env.DB!.prepare(`SELECT id,tenant,name,email,channel,note,created_at FROM leads WHERE tenant=?1 ORDER BY created_at DESC`).bind(b.tenant)
+            : env.DB!.prepare(`SELECT id,tenant,name,email,channel,note,created_at FROM leads ORDER BY created_at DESC LIMIT 100`);
+          const rows = await stmt.all();
+          return json({ok:true,items:rows.results||[],method,build:BUILD});
+        } catch (e:any) {
+          return json({ok:false,error:String(e?.message||e),where:"lead.list",build:BUILD},{status:500});
+        }
       }
 
+      // ===== Admin =====
       case "admin.d1.tables": {
         if (!okAdmin(env, request)) return una();
-        const x = await listTables(env);
-        return json({ok:true,...x,method,build:BUILD});
+        try {
+          const x = await listTables(env);
+          return json({ok:true,...x,method,build:BUILD});
+        } catch (e:any) {
+          return json({ok:false,error:String(e?.message||e),where:"admin.d1.tables",build:BUILD},{status:500});
+        }
       }
 
       case "admin.d1.migrate": {
         if (!okAdmin(env, request)) return una();
-        await ensureSchema(env);
-        return json({ok:true,applied:true,noop:false,detail:null,method,build:BUILD});
+        try {
+          await ensureSchema(env);
+          return json({ok:true,applied:true,noop:false,detail:null,method,build:BUILD});
+        } catch (e:any) {
+          return json({ok:false,error:String(e?.message||e),where:"admin.d1.migrate",build:BUILD},{status:500});
+        }
       }
 
       default: return bad(`unknown action: ${action}`);
     }
   } catch (e:any) {
+    // ここに来ても 1101 にはならず JSON を返す
     return json({ok:false,error:String(e?.message||e),where:"top-level",build:BUILD},{status:500});
   }
 };
 
-export const onRequest:         PagesFunction<Env> = handler;
-export const onRequestGet:      PagesFunction<Env> = handler;
-export const onRequestPost:     PagesFunction<Env> = handler;
-export const onRequestOptions:  PagesFunction<Env> = handler;
+// 405予防（すべてのHTTPメソッドにバインド）
+export const onRequest:        PagesFunction<Env> = handler;
+export const onRequestGet:     PagesFunction<Env> = handler;
+export const onRequestPost:    PagesFunction<Env> = handler;
+export const onRequestOptions: PagesFunction<Env> = handler;
