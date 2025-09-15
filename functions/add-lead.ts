@@ -1,54 +1,54 @@
-// /functions/add-lead.ts
-export interface Env { DB: D1Database; }
+interface Env {
+  DB: D1Database;
+}
 
-const cors = (req: Request) => ({
-  "access-control-allow-origin": req.headers.get("origin") || "*",
-  "access-control-allow-headers": "content-type,cf-turnstile-response",
-  "access-control-allow-methods": "POST,OPTIONS",
-});
-const json = (req: Request, body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...cors(req) } });
+function json(obj: unknown, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
 
-const hexId = () =>
-  [...crypto.getRandomValues(new Uint8Array(16))]
-    .map((x) => x.toString(16).padStart(2, "0"))
-    .join("")
-    .toUpperCase();
+function newId(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
 
-export const onRequestOptions: PagesFunction<Env> = async ({ request }) =>
-  new Response(null, { status: 204, headers: cors(request) });
-
-export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  try {
-    const p = (await request.json().catch(() => ({}))) as any;
-    const tenant = String(p.tenant || "").trim();
-    const name = String(p.name || "").trim();
-    const email = String(p.email || "").trim().toLowerCase();
-    const channel = (p.channel ? String(p.channel) : "") || null;
-    const note = (p.note ? String(p.note) : "") || null;
-
-    if (!tenant || !name || !email) {
-      return json(request, { ok: false, error: "bad_request", need: "tenant,name,email" }, 400);
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return json(request, { ok: false, error: "invalid_email" }, 400);
-    }
-
-    const id = hexId();
-    const now = Math.floor(Date.now() / 1000);
-
-    await env.DB
-      .prepare(
-        `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(tenant, email) DO UPDATE SET
-           name=excluded.name, channel=excluded.channel, note=excluded.note`
-      )
-      .bind(id, tenant, name, email, channel, note, now)
-      .run();
-
-    return json(request, { ok: true });
-  } catch (e: any) {
-    return json(request, { ok: false, error: "exception", detail: String(e?.message || e) }, 500);
+export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
+  if (request.method !== "POST") {
+    return json({ ok: false, error: "method_not_allowed" }, 405);
   }
+
+  let body: any;
+  try { body = await request.json(); } catch { return json({ ok: false, error: "bad_json" }, 400); }
+
+  const tenant = String(body?.tenant || "").trim();
+  const name   = String(body?.name   || "").trim();
+  const email  = String(body?.email  || "").trim().toLowerCase();
+  const channel= String(body?.channel|| "").trim() || null;
+  const note   = String(body?.note   || "").trim() || null;
+
+  if (!tenant || !name || !email) return json({ ok: false, error: "missing_params" }, 400);
+
+  // スキーマ前提：/init-db または /api?action=admin.d1.migrate で作成済み
+  const now = Math.floor(Date.now() / 1000);
+  const id  = newId();
+
+  // UPSERT（tenant,email 一意）
+  await env.DB.prepare(
+    `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+     ON CONFLICT(tenant, email) DO UPDATE SET
+       name=excluded.name,
+       channel=excluded.channel,
+       note=excluded.note,
+       created_at=excluded.created_at`
+  ).bind(id, tenant, name, email, channel, note, now).run();
+
+  const row = await env.DB.prepare(
+    `SELECT id FROM leads WHERE tenant=?1 AND email=?2`
+  ).bind(tenant, email).first<{ id: string }>();
+
+  return json({ ok: true, id: row?.id || id });
 };
