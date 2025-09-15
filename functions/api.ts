@@ -1,164 +1,150 @@
-// /functions/api.ts
-export interface Env {
+interface Env {
   DB: D1Database;
-  API_KEY?: string;   // 推奨：これを使う
-  API?: string;
-  API_TOKEN?: string;
-  ADMIN_TOKEN?: string; // 管理系はこっち
-  ADMIN_KEY?: string;
+  API_KEY?: string; API?: string; API_TOKEN?: string;
+  ADMIN_TOKEN?: string; ADMIN_KEY?: string; ADMIN?: string;
 }
 
-type Json = Record<string, unknown> | unknown[];
+type J = Record<string, unknown>;
 
-const ACTIONS = [
-  "__actions__",
-  "__echo__",
-  "lead.add",
-  "lead.list",
-  "admin.d1.tables",
-  "admin.d1.migrate",
-];
-
-// 公開してよいアクション（不要なら空に）
-const PUBLIC = new Set<string>(["__actions__"]);
-
-// ===== Helpers =====
-const cors = (req: Request) => ({
-  "access-control-allow-origin": req.headers.get("origin") || "*",
-  "access-control-allow-headers": "authorization,content-type,x-api-key",
-  "access-control-allow-methods": "GET,POST,OPTIONS",
-});
-
-const json = (req: Request, body: Json, status = 200) =>
-  new Response(JSON.stringify(body), {
+function json(obj: J, status = 200) {
+  return new Response(JSON.stringify(obj), {
     status,
-    headers: {
-      "content-type": "application/json",
-      ...cors(req),
-    },
+    headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
 
-const readToken = (req: Request) => {
+function readToken(req: Request): string | null {
   const h = req.headers;
-  const auth = h.get("authorization");
-  if (auth && /^bearer\s+/i.test(auth)) return auth.replace(/^bearer\s+/i, "").trim();
-  const x = h.get("x-api-key");
-  return (x && x.trim()) || null;
-};
+  const auth = h.get("authorization") || h.get("Authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return h.get("x-api-key") || h.get("X-API-KEY");
+}
 
-const vals = (env: Env, keys: string[]) =>
-  keys
-    .map((k) => (env as any)[k] as string | undefined)
-    .filter(Boolean)
-    .map((s) => s!.trim());
+function getApiSecret(env: Env): string | null {
+  return env.API_KEY || env.API || env.API_TOKEN || null;
+}
+function getAdminSecret(env: Env): string | null {
+  return env.ADMIN_TOKEN || env.ADMIN_KEY || env.ADMIN || null;
+}
 
-const apiTokens = (env: Env) => vals(env, ["API_KEY", "API", "API_TOKEN"]);
-const adminTokens = (env: Env) => vals(env, ["ADMIN_TOKEN", "ADMIN_KEY"]);
-const match = (token: string, pool: string[]) => pool.some((v) => v === token);
+function newId(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
 
-// ID: 32桁HEX（大文字）
-const hexId = () =>
-  [...crypto.getRandomValues(new Uint8Array(16))]
-    .map((x) => x.toString(16).padStart(2, "0"))
-    .join("")
-    .toUpperCase();
-
-// ===== Handlers =====
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
-  // CORS preflight
-  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(request) });
+  const url = new URL(request.url);
+  const action = (url.searchParams.get("action") || "").trim();
+
+  // 公開で見せるアクション一覧
+  if (request.method === "GET" && action === "__actions__") {
+    return json({
+      ok: true,
+      actions: ["__actions__", "__echo__", "lead.add", "lead.list", "admin.d1.tables", "admin.d1.migrate"],
+    });
+  }
+
+  // 共通ヘルパ
+  const token = readToken(request);
+  const apiSecret = getApiSecret(env);
+  const adminSecret = getAdminSecret(env);
+
+  async function requireAPI() {
+    if (!token || !apiSecret || token !== apiSecret) throw json({ ok: false, error: "unauthorized", need: "api" }, 401);
+  }
+  async function requireADMIN() {
+    if (!token || !adminSecret || token !== adminSecret) throw json({ ok: false, error: "unauthorized", need: "admin" }, 401);
+  }
 
   try {
-    const url = new URL(request.url);
-    const action = url.searchParams.get("action") || "";
-
-    // 公開アクション
-    if (PUBLIC.has(action)) {
-      if (action === "__actions__") return json(request, { ok: true, actions: ACTIONS });
-      // 他に公開したいものがあればここに
-    }
-
-    // 認証
-    const token = readToken(request);
-    const isAdminAction = action.startsWith("admin.");
-    if (!token) {
-      return json(request, { ok: false, error: "unauthorized", need: isAdminAction ? "admin" : "api" }, 401);
-    }
-    const ok = isAdminAction ? match(token, adminTokens(env)) : match(token, apiTokens(env));
-    if (!ok) {
-      return json(request, { ok: false, error: "unauthorized", need: isAdminAction ? "admin" : "api" }, 401);
-    }
-
-    // ルーティング
     switch (action) {
+      // ===== echo（API必須）=====
       case "__echo__": {
-        const raw = await request.json().catch(() => null);
-        return json(request, { ok: true, action, raw, method: request.method });
+        await requireAPI();
+        let raw: any = null;
+        try { raw = await request.json(); } catch {}
+        return json({ ok: true, action, raw, method: request.method });
       }
 
+      // ===== リード追加（API）=====
       case "lead.add": {
-        const p = (await request.json().catch(() => ({}))) as any;
-        const tenant = String(p.tenant || "").trim();
-        const name = String(p.name || "").trim();
-        const email = String(p.email || "").trim().toLowerCase();
-        const channel = (p.channel ? String(p.channel) : "") || null;
-        const note = (p.note ? String(p.note) : "") || null;
+        await requireAPI();
+        if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+        let b: any; try { b = await request.json(); } catch { return json({ ok: false, error: "bad_json" }, 400); }
+        const tenant = String(b?.tenant || "").trim();
+        const name   = String(b?.name   || "").trim();
+        const email  = String(b?.email  || "").trim().toLowerCase();
+        const channel= String(b?.channel|| "").trim() || null;
+        const note   = String(b?.note   || "").trim() || null;
+        if (!tenant || !name || !email) return json({ ok: false, error: "missing_params" }, 400);
 
-        if (!tenant || !name || !email) {
-          return json(request, { ok: false, error: "bad_request", need: "tenant,name,email" }, 400);
-        }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-          return json(request, { ok: false, error: "invalid_email" }, 400);
-        }
-
-        const id = hexId();
         const now = Math.floor(Date.now() / 1000);
-        // UPSERT（tenant+email で一意）
-        await env.DB
-          .prepare(
-            `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(tenant, email) DO UPDATE SET
-               name=excluded.name, channel=excluded.channel, note=excluded.note`
-          )
-          .bind(id, tenant, name, email, channel, note, now)
-          .run();
+        const id  = newId();
+        await env.DB.prepare(
+          `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT(tenant, email) DO UPDATE SET
+             name=excluded.name,
+             channel=excluded.channel,
+             note=excluded.note,
+             created_at=excluded.created_at`
+        ).bind(id, tenant, name, email, channel, note, now).run();
 
-        return json(request, { ok: true, id });
+        const row = await env.DB.prepare(
+          `SELECT id FROM leads WHERE tenant=?1 AND email=?2`
+        ).bind(tenant, email).first<{ id: string }>();
+
+        return json({ ok: true, id: row?.id || id });
       }
 
+      // ===== リード一覧（API）=====
       case "lead.list": {
-        const p = (await request.json().catch(() => ({}))) as any;
-        const tenant = String(p.tenant || "").trim();
-        const limit = Math.max(1, Math.min(1000, Number(p.limit || 100)));
-
-        if (!tenant) return json(request, { ok: false, error: "bad_request", need: "tenant" }, 400);
-
-        const r = await env.DB
-          .prepare(
-            `SELECT id, tenant, name, email, channel, note, created_at
-             FROM leads WHERE tenant = ?1
-             ORDER BY created_at DESC
-             LIMIT ?2`
-          )
-          .bind(tenant, limit)
-          .all();
-
-        return json(request, { ok: true, items: r.results || [] });
+        await requireAPI();
+        if (request.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
+        let b: any; try { b = await request.json(); } catch { b = {}; }
+        const tenant = String(b?.tenant || "").trim();
+        const q = tenant
+          ? `SELECT id, tenant, name, email, channel, note, created_at
+               FROM leads WHERE tenant=?1 ORDER BY created_at DESC`
+          : `SELECT id, tenant, name, email, channel, note, created_at
+               FROM leads ORDER BY created_at DESC`;
+        const { results } = tenant
+          ? await env.DB.prepare(q).bind(tenant).all()
+          : await env.DB.prepare(q).all();
+        return json({ ok: true, items: results || [] });
       }
 
+      // ===== D1 テーブル一覧（ADMIN）=====
       case "admin.d1.tables": {
-        const tables = await env.DB
-          .prepare(`SELECT name, sql FROM sqlite_schema WHERE type='table' ORDER BY name`)
-          .all();
-        const indexes = await env.DB
-          .prepare(`SELECT name, tbl_name, sql FROM sqlite_schema WHERE type='index' ORDER BY name`)
-          .all();
-        return json(request, { ok: true, tables: tables.results || [], indexes: indexes.results || [] });
+        await requireADMIN();
+        const tables = await env.DB.prepare(
+          `SELECT name, sql FROM sqlite_schema WHERE type='table' ORDER BY name ASC`
+        ).all();
+
+        const indexes = await env.DB.prepare(
+          `SELECT name, tbl_name, sql FROM sqlite_schema WHERE type='index' ORDER BY name ASC`
+        ).all();
+
+        return json({ ok: true, tables: tables.results || [], indexes: indexes.results || [] });
       }
 
+      // ===== マイグレーション（ADMIN）– 安定版（1ステートメントずつ）=====
       case "admin.d1.migrate": {
-        // 必要なテーブル＆インデックスを作成
+        await requireADMIN();
+
+        const have = await env.DB.prepare(
+          `SELECT name FROM sqlite_schema WHERE type='table' AND name='leads'`
+        ).all();
+
+        if ((have.results?.length || 0) > 0) {
+          await env.DB.exec(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_email
+              ON leads (tenant, email);
+          `);
+          return json({ ok: true, migrated: false, note: "schema already present" });
+        }
+
         await env.DB.exec(`
           CREATE TABLE IF NOT EXISTS leads (
             id TEXT PRIMARY KEY,
@@ -169,15 +155,21 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
             note TEXT,
             created_at INTEGER NOT NULL
           );
+        `);
+        await env.DB.exec(`
           CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_email
             ON leads (tenant, email);
         `);
-        return json(request, { ok: true, migrated: true });
-      }
-    }
 
-    return json(request, { ok: false, error: "unknown_action", action }, 404);
+        return json({ ok: true, migrated: true });
+      }
+
+      default:
+        return json({ ok: false, error: "unknown_action", action }, 400);
+    }
   } catch (e: any) {
-    return json(request, { ok: false, error: "exception", detail: String(e?.message || e) }, 500);
+    if (e instanceof Response) return e; // requireAPI/ADMIN の throw をそのまま返す
+    const msg = String(e?.message || e);
+    return json({ ok: false, error: "exception", detail: msg }, 500);
   }
 };
