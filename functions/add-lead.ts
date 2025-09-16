@@ -1,54 +1,86 @@
-interface Env {
-  DB: D1Database;
-}
+// functions/form/lead.ts
+// Public form endpoint (no API key). Writes to D1 safely.
+// Keep /api/* for backend-to-backend with x-api-key.
 
-function json(obj: unknown, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+interface Env { DB?: D1Database }
+
+const BUILD = "v2025-09-16-form-endpoint-01";
+
+type JsonInit = ResponseInit & { headers?: Record<string, string> };
+const json = (data: any, init: JsonInit = {}) =>
+  new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+      "access-control-allow-headers": "content-type",
+      "access-control-allow-methods": "POST,OPTIONS",
+      ...(init.headers || {}),
+    },
   });
-}
 
-function newId(): string {
-  const b = new Uint8Array(16);
-  crypto.getRandomValues(b);
-  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("").toUpperCase();
-}
+const bad = (m: string, s = 400) => json({ ok: false, error: m, build: BUILD }, { status: s });
 
-export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
-  if (request.method !== "POST") {
-    return json({ ok: false, error: "method_not_allowed" }, 405);
+const safeJson = async <T = any>(req: Request): Promise<T | null> => {
+  try { return (await req.json()) as T } catch { return null }
+};
+
+function assertDB(env: Env) {
+  if (!env.DB || typeof (env.DB as any).prepare !== "function") {
+    throw new Error("D1 binding 'DB' is missing. Set Pages > Functions > D1 bindings: Name=DB");
   }
+}
 
-  let body: any;
-  try { body = await request.json(); } catch { return json({ ok: false, error: "bad_json" }, 400); }
+async function ensureSchema(env: Env) {
+  assertDB(env);
+  await env.DB!.prepare(
+    `CREATE TABLE IF NOT EXISTS leads (
+      id TEXT PRIMARY KEY,
+      tenant TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      channel TEXT,
+      note TEXT,
+      created_at INTEGER NOT NULL
+    )`
+  ).run();
+  await env.DB!.prepare(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_email ON leads (tenant, email)`
+  ).run();
+}
 
-  const tenant = String(body?.tenant || "").trim();
-  const name   = String(body?.name   || "").trim();
-  const email  = String(body?.email  || "").trim().toLowerCase();
-  const channel= String(body?.channel|| "").trim() || null;
-  const note   = String(body?.note   || "").trim() || null;
+export const onRequestOptions: PagesFunction<Env> = async () =>
+  json({ ok: true, preflight: true, build: BUILD }, { status: 204 });
 
-  if (!tenant || !name || !email) return json({ ok: false, error: "missing_params" }, 400);
+export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+  try {
+    const body = (await safeJson(request)) ?? {};
+    const tenant = (body.tenant ?? "").toString().trim();
+    const name   = (body.name   ?? "").toString().trim();
+    const email  = (body.email  ?? "").toString().trim();
+    const channel= (body.channel?? null) as string | null;
+    const note   = (body.note   ?? null) as string | null;
 
-  // スキーマ前提：/init-db または /api?action=admin.d1.migrate で作成済み
-  const now = Math.floor(Date.now() / 1000);
-  const id  = newId();
+    if (!tenant || !name || !email) return bad("missing tenant/name/email");
 
-  // UPSERT（tenant,email 一意）
-  await env.DB.prepare(
-    `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-     ON CONFLICT(tenant, email) DO UPDATE SET
-       name=excluded.name,
-       channel=excluded.channel,
-       note=excluded.note,
-       created_at=excluded.created_at`
-  ).bind(id, tenant, name, email, channel, note, now).run();
+    // ここで必要なら Turnstile 検証や Origin チェックを追加してね（任意）
 
-  const row = await env.DB.prepare(
-    `SELECT id FROM leads WHERE tenant=?1 AND email=?2`
-  ).bind(tenant, email).first<{ id: string }>();
-
-  return json({ ok: true, id: row?.id || id });
+    await ensureSchema(env);
+    try {
+      await env.DB!.prepare(
+        `INSERT INTO leads (id, tenant, name, email, channel, note, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+      ).bind(crypto.randomUUID(), tenant, name, email, channel, note, Date.now()).run();
+      return json({ ok: true, build: BUILD });
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg.includes("UNIQUE") || msg.includes("idx_leads_tenant_email")) {
+        return json({ ok: true, duplicate: true, build: BUILD });
+      }
+      return bad(msg, 500);
+    }
+  } catch (e: any) {
+    return bad(String(e?.message || e), 500);
+  }
 };
