@@ -1,11 +1,12 @@
 // functions/api.ts
-const BUILD = "v2025-09-16-ok-api-debug-02";
+// Cloudflare Pages Functions + D1: 1文ずつ実行で "incomplete input" 回避版
+const BUILD = "v2025-09-16-d1-fix-exec-01";
 
 interface Env {
-  DB?: D1Database;
-  API_KEY?: string;
-  ADMIN_TOKEN?: string;
-  ADMIN_KEY?: string;
+  DB?: D1Database;            // Pages > Settings > Functions > D1 bindings : Name=DB
+  API_KEY?: string;           // Pages > Settings > Environment variables (Prod/Preview 両方)
+  ADMIN_TOKEN?: string;       // 管理者用（Prod/Preview 両方）
+  ADMIN_KEY?: string;         // 互換（あればOK）
 }
 
 type JsonInit = ResponseInit & { headers?: Record<string,string> };
@@ -27,10 +28,13 @@ const una = (m="unauthorized")=> json({ok:false,error:m,build:BUILD}, {status:40
 const qp = (u:URL,k:string)=> (u.searchParams.get(k)||"").trim();
 const h  = (r:Request,n:string)=> (r.headers.get(n)||r.headers.get(n.toLowerCase())||"").trim();
 const bearer = (r:Request)=>{ const a=h(r,"authorization"); const m=/^Bearer\s+(.+)$/.exec(a); return m?m[1].trim():""; };
-const pick = (r:Request)=> bearer(r) || h(r,"x-api-key") || h(r,"x-admin-key");
 const norm = (s?:string)=> (s||"").replace(/\s+/g,"");
+const pick = (r:Request)=> bearer(r) || h(r,"x-api-key") || h(r,"x-admin-key");
 const okApi   = (e:Env,r:Request)=> !!(e.API_KEY && norm(pick(r))===norm(e.API_KEY));
-const okAdmin = (e:Env,r:Request)=> { const p=norm(pick(r)); return !!(p && (p===norm(e.ADMIN_TOKEN||"") || (e.ADMIN_KEY && p===norm(e.ADMIN_KEY)))); };
+const okAdmin = (e:Env,r:Request)=> {
+  const p=norm(pick(r));
+  return !!(p && (p===norm(e.ADMIN_TOKEN||"") || (e.ADMIN_KEY && p===norm(e.ADMIN_KEY))));
+};
 const safeJson = async<T=any>(req:Request):Promise<T|null> => { try{ return await req.json() as T }catch{ return null } };
 const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
   const b = (await safeJson(req)) ?? {};
@@ -38,34 +42,37 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
     tenant: (b.tenant ?? qp(u,"tenant") ?? "").toString().trim(),
     name:   (b.name   ?? qp(u,"name")   ?? "").toString().trim(),
     email:  (b.email  ?? qp(u,"email")  ?? "").toString().trim(),
-    channel: (b.channel ?? qp(u,"channel")) || null, // () 必須
-    note:    (b.note    ?? qp(u,"note"))    || null, // () 必須
+    // esbuild/JS: "??" と "||" 併用は括弧で明示
+    channel: (b.channel ?? qp(u,"channel")) || null,
+    note:    (b.note    ?? qp(u,"note"))    || null,
     version: (b.version ?? qp(u,"version") ?? "").toString().trim(),
   };
 }});
 
-// --- D1 helpers ---
+// ===== D1 helpers =====
 function assertDB(env:Env){
-  if (!env.DB || typeof (env.DB as any).exec !== "function") {
+  if (!env.DB || typeof (env.DB as any).prepare !== "function") {
     throw new Error("D1 binding 'DB' is missing. Set Pages > Settings > Functions > D1 bindings: Name=DB (Production & Preview).");
   }
 }
+
+// ★ 重要：1文ずつ prepare().run() で実行（exec で複文にしない）
 async function ensureSchema(env:Env){
   assertDB(env);
-  const sql = `
-CREATE TABLE IF NOT EXISTS leads (
-  id TEXT PRIMARY KEY,
-  tenant TEXT NOT NULL,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  channel TEXT,
-  note TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_email ON leads (tenant, email);
-`;
-  await env.DB!.exec(sql);
+  const createTable = `CREATE TABLE IF NOT EXISTS leads (
+    id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    channel TEXT,
+    note TEXT,
+    created_at INTEGER NOT NULL
+  )`;
+  const createIndex = `CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_tenant_email ON leads (tenant, email)`;
+  await env.DB!.prepare(createTable).run();
+  await env.DB!.prepare(createIndex).run();
 }
+
 async function dbPing(env:Env){
   assertDB(env);
   const r = await env.DB!.prepare("SELECT 1 as ok").all();
@@ -78,16 +85,21 @@ async function listTables(env:Env){
   return { tables:(t.results||[]), indexes:(i.results||[]) };
 }
 
-// --- main handler ---
+// ===== main handler =====
 const handler: PagesFunction<Env> = async (ctx) => {
   const { request, env } = ctx;
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
   const action = qp(url,"action");
+
   if (method==="OPTIONS") return json({ok:true,preflight:true,build:BUILD},{status:204});
   if (!action) return bad("missing action");
 
-  const actions = ["__actions__","__build__","__echo__","__diag.db","__diag.auth","lead.add","lead.list","admin.d1.tables","admin.d1.migrate"];
+  const actions = [
+    "__actions__","__build__","__echo__","__diag.db","__diag.auth",
+    "lead.add","lead.list",
+    "admin.d1.tables","admin.d1.migrate","admin.d1.repair"   // repair 追加
+  ];
 
   try {
     switch (action) {
@@ -113,7 +125,7 @@ const handler: PagesFunction<Env> = async (ctx) => {
         }
       }
 
-      // 改良版：ADMINで認証した上で x-api-key も個別に検査
+      // 改良版：ADMIN で認証しつつ x-api-key を API_KEY と厳密突合
       case "__diag.auth": {
         if (!okAdmin(env, request)) return una();
         const providedApi   = norm(h(request,"x-api-key"));
@@ -133,6 +145,7 @@ const handler: PagesFunction<Env> = async (ctx) => {
         });
       }
 
+      // ===== Public API =====
       case "lead.add": {
         if (!okApi(env, request)) return una();
         const b = await bodyOrQuery(request,url).parse();
@@ -166,6 +179,7 @@ const handler: PagesFunction<Env> = async (ctx) => {
         }
       }
 
+      // ===== Admin =====
       case "admin.d1.tables": {
         if (!okAdmin(env, request)) return una();
         try { const x = await listTables(env); return json({ok:true,...x,method,build:BUILD}); }
@@ -178,6 +192,12 @@ const handler: PagesFunction<Env> = async (ctx) => {
         catch (e:any) { return json({ok:false,error:String(e?.message||e),where:"admin.d1.migrate",build:BUILD},{status:500}); }
       }
 
+      case "admin.d1.repair": {
+        if (!okAdmin(env, request)) return una();
+        try { await ensureSchema(env); const x = await listTables(env); return json({ok:true,repaired:true,...x,build:BUILD}); }
+        catch (e:any) { return json({ok:false,error:String(e?.message||e),where:"admin.d1.repair",build:BUILD},{status:500}); }
+      }
+
       default: return bad(`unknown action: ${action}`);
     }
   } catch (e:any) {
@@ -185,6 +205,7 @@ const handler: PagesFunction<Env> = async (ctx) => {
   }
 };
 
+// 405予防
 export const onRequest:        PagesFunction<Env> = handler;
 export const onRequestGet:     PagesFunction<Env> = handler;
 export const onRequestPost:    PagesFunction<Env> = handler;
