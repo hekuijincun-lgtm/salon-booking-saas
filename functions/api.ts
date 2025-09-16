@@ -1,6 +1,6 @@
 // functions/api.ts
 // Pages Functions (GET/POST/OPTIONS全部OK) + ビルド表示 + D1自己診断 + 例外安全化
-const BUILD = "v2025-09-15-fix-paren-01";
+const BUILD = "v2025-09-16-fix-paren-final";
 
 interface Env {
   DB?: D1Database;            // PagesのD1 Binding名は "DB"
@@ -39,7 +39,7 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
     tenant: (b.tenant ?? qp(u,"tenant") ?? "").toString().trim(),
     name:   (b.name   ?? qp(u,"name")   ?? "").toString().trim(),
     email:  (b.email  ?? qp(u,"email")  ?? "").toString().trim(),
-    // 👇 ここが今回の修正点（カッコを入れて明示）
+    // ★ ここが今回の修正点（() で明示）
     channel: (b.channel ?? qp(u,"channel")) || null,
     note:    (b.note    ?? qp(u,"note"))    || null,
     version: (b.version ?? qp(u,"version") ?? "").toString().trim(),
@@ -48,7 +48,6 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
 
 // === D1 安全ユーティリティ ===
 function assertDB(env:Env){
-  // D1未バインドだと "1101" 落ちを起こしやすいので明示的に検査
   if (!env.DB || typeof (env.DB as any).exec !== "function") {
     throw new Error("D1 binding 'DB' is missing. Go to Pages > Settings > Functions > D1 bindings and add 'DB' for both Production & Preview.");
   }
