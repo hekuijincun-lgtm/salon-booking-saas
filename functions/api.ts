@@ -1,12 +1,12 @@
 // functions/api.ts
-// Pages Functions (GET/POST/OPTIONS全部OK) + ビルド表示 + D1自己診断 + 例外安全化
+// Cloudflare Pages Functions (GET/POST/OPTIONS) — D1自己修復・可視化・診断込みの完成版
 const BUILD = "v2025-09-16-fix-paren-final";
 
 interface Env {
-  DB?: D1Database;            // PagesのD1 Binding名は "DB"
-  API_KEY?: string;
-  ADMIN_TOKEN?: string;
-  ADMIN_KEY?: string;         // 互換
+  DB?: D1Database;            // ← Pages > Settings > Functions > D1 bindings で Name=DB を Production/Preview 両方に
+  API_KEY?: string;           // ← Pages > Settings > Environment variables に設定（Production/Preview 両方）
+  ADMIN_TOKEN?: string;       // ← 同上（管理者専用API向け）
+  ADMIN_KEY?: string;         // ← 互換用（どちらか一致で管理者OK）
 }
 
 type JsonInit = ResponseInit & { headers?: Record<string,string> };
@@ -39,17 +39,17 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
     tenant: (b.tenant ?? qp(u,"tenant") ?? "").toString().trim(),
     name:   (b.name   ?? qp(u,"name")   ?? "").toString().trim(),
     email:  (b.email  ?? qp(u,"email")  ?? "").toString().trim(),
-    // ← () を入れてビルド通る形に修正済み
+    // esbuild対応：?? と || の併用は括弧必須
     channel: (b.channel ?? qp(u,"channel")) || null,
     note:    (b.note    ?? qp(u,"note"))    || null,
     version: (b.version ?? qp(u,"version") ?? "").toString().trim(),
   };
 }});
 
-// === D1 安全ユーティリティ ===
+// ==== D1ユーティリティ（未バインドでも1101で落ちずにJSONで返す） ====
 function assertDB(env:Env){
   if (!env.DB || typeof (env.DB as any).exec !== "function") {
-    throw new Error("D1 binding 'DB' is missing. Go to Pages > Settings > Functions > D1 bindings and add 'DB' for both Production & Preview.");
+    throw new Error("D1 binding 'DB' is missing. Set Pages > Settings > Functions > D1 bindings: Name=DB (Production & Preview).");
   }
 }
 async function ensureSchema(env:Env){
@@ -80,16 +80,17 @@ async function listTables(env:Env){
   return { tables:(t.results||[]), indexes:(i.results||[]) };
 }
 
-// === メインハンドラ ===
+// ==== メインハンドラ ====
 const handler: PagesFunction<Env> = async (ctx) => {
   const { request, env } = ctx;
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
   const action = qp(url,"action");
+
   if (method==="OPTIONS") return json({ok:true,preflight:true,build:BUILD},{status:204});
   if (!action) return bad("missing action");
 
-  const actions = ["__actions__","__build__","__echo__","__diag.db","lead.add","lead.list","admin.d1.tables","admin.d1.migrate"];
+  const actions = ["__actions__","__build__","__echo__","__diag.db","__diag.auth","lead.add","lead.list","admin.d1.tables","admin.d1.migrate"];
 
   try {
     switch (action) {
@@ -115,7 +116,24 @@ const handler: PagesFunction<Env> = async (ctx) => {
         }
       }
 
-      // ===== API =====
+      // 管理者限定：クライアント送信のトークンと環境変数API_KEYの一致可視化（値そのものは出さない）
+      case "__diag.auth": {
+        if (!okAdmin(env, request)) return una();
+        const provided = (pick(request) || "").replace(/\s+/g,"");
+        const envApi   = (env.API_KEY     || "").replace(/\s+/g,"");
+        const envAdmA  = (env.ADMIN_TOKEN || "").replace(/\s+/g,"");
+        const envAdmB  = (env.ADMIN_KEY   || "").replace(/\s+/g,"");
+        return json({
+          ok: true,
+          hasApi: !!envApi, apiLen: envApi.length,
+          providedLen: provided.length,
+          matchApi: (envApi && provided && envApi === provided),
+          hasAdminA: !!envAdmA, hasAdminB: !!envAdmB,
+          build: BUILD
+        });
+      }
+
+      // ====== Public API ======
       case "lead.add": {
         if (!okApi(env, request)) return una();
         const b = await bodyOrQuery(request,url).parse();
@@ -149,7 +167,7 @@ const handler: PagesFunction<Env> = async (ctx) => {
         }
       }
 
-      // ===== Admin =====
+      // ====== Admin ======
       case "admin.d1.tables": {
         if (!okAdmin(env, request)) return una();
         try {
@@ -173,12 +191,11 @@ const handler: PagesFunction<Env> = async (ctx) => {
       default: return bad(`unknown action: ${action}`);
     }
   } catch (e:any) {
-    // ここに来ても 1101 にはならず JSON を返す
     return json({ok:false,error:String(e?.message||e),where:"top-level",build:BUILD},{status:500});
   }
 };
 
-// 405予防（すべてのHTTPメソッドにバインド）
+// 405予防（全HTTPに対応）
 export const onRequest:        PagesFunction<Env> = handler;
 export const onRequestGet:     PagesFunction<Env> = handler;
 export const onRequestPost:    PagesFunction<Env> = handler;
