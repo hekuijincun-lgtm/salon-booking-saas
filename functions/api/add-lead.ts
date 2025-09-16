@@ -1,19 +1,23 @@
 // functions/api/add-lead.ts
 // Public form endpoint for Cloudflare Pages Functions (no API key).
 interface Env { DB?: D1Database }
-const BUILD = "v2025-09-16-form-endpoint-API";
+const BUILD = "v2025-09-16-form-endpoint-API-opts-204";
 
 type JsonInit = ResponseInit & { headers?: Record<string,string> };
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "content-type,cf-turnstile-response",
+  "access-control-allow-methods": "GET,POST,OPTIONS",
+  "access-control-max-age": "86400",
+} as const;
+
 const json = (d:any,i:JsonInit={}) => new Response(JSON.stringify(d), {
   ...i,
   headers: {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
-    // CORS (cross-originでも安心)
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type,cf-turnstile-response",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    ...(i.headers||{})
+    ...CORS,
+    ...(i.headers||{}),
   }
 });
 const bad = (m:string,s=400)=>json({ok:false,error:m,build:BUILD},{status:s});
@@ -50,8 +54,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
   catch (e:any) { return bad(String(e?.message||e), 500) }
 };
 
+// 🔧 ここが修正ポイント：204 は “本文なし”
 export const onRequestOptions: PagesFunction<Env> = async () =>
-  json({ ok:true, preflight:true, build:BUILD }, { status:204 });
+  new Response(null, { status: 204, headers: { ...CORS } });
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   try {
@@ -73,7 +78,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     } catch (e:any) {
       const msg = String(e?.message||e);
       if (msg.includes("UNIQUE") || msg.includes("idx_leads_tenant_email")) {
-        // 既存は上書き保存してもOKにする運用なら UPDATE にしても良い
+        // 既存メールは “成功（duplicate）” 扱い
         return json({ ok:true, duplicate:true, build:BUILD });
       }
       return bad(msg, 500);
