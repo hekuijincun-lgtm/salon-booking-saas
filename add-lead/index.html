@@ -35,7 +35,7 @@
     .right{margin-left:auto}
     .pill{display:inline-block;padding:2px 8px;border:1px solid var(--bd);border-radius:999px;font-size:12px;color:var(--sub)}
   </style>
-  <!-- Turnstile（使う時だけ sitekey を入れる。空なら自動スキップ） -->
+  <!-- Turnstile（サイトキーがあれば表示。無ければ自動スキップ） -->
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
@@ -63,7 +63,7 @@
         <label for="note">メモ（任意）</label>
         <textarea id="note" name="note" placeholder="導入検討の背景など"></textarea>
 
-        <!-- Turnstile（サイトキーがあれば data-sitekey を設定） -->
+        <!-- Turnstile ウィジェット（サイトキーがあれば data-sitekey を設定） -->
         <div id="ts-wrap" style="margin-top:12px;display:none">
           <div class="cf-turnstile" data-sitekey="" data-theme="light"></div>
           <div class="hint">※ セキュリティチェック</div>
@@ -88,9 +88,9 @@
     // ===== 設定 =====
     const APP = {
       tenant: "salon-booking-saas",
-      endpoint: "/api/add-lead", // ← API Functions（トークン不要の公開エンドポイント）
-      // Turnstile サイトキー（使う時だけ設定）例: "0x0000000000000000000000000000000AA"
-      turnstileSiteKey: ""
+      endpoint: "/api/add-lead", // ← Pages Functions 側の公開API（パターンA）
+      // Turnstile サイトキー（使う時だけ入れる）例: "0x0000000000000000000000000000000AA"
+      turnstileSiteKey: "" // ← 空ならウィジェットは非表示・ヘッダ未付与
     };
 
     // ===== DOM =====
@@ -100,21 +100,37 @@
     const stat = $("#stat-text");
     const msg  = $("#msg");
     const tsWrap = $("#ts-wrap");
+    const sendBtn = document.getElementById("send");
+
+    // ===== UTM 保持（初回優先、30日想定でlocalStorage保存） =====
+    const UTM_KEYS = ["utm_source","utm_medium","utm_campaign","utm_content","utm_term"];
+    function getQuery() { return Object.fromEntries(new URL(location.href).searchParams.entries()); }
+    function loadUtm() { try { return JSON.parse(localStorage.getItem("__utm")||"{}"); } catch { return {}; } }
+    function saveUtm(obj){ localStorage.setItem("__utm", JSON.stringify(obj)); }
+    (function bootstrapUtm(){
+      const q = getQuery(), now = Date.now();
+      let utm = loadUtm(); let touched = false;
+      for (const k of UTM_KEYS) { if (q[k]) { utm[k]=q[k]; utm.__ts=now; touched=true; } }
+      if (!utm.referrer && document.referrer) { utm.referrer = document.referrer; touched = true; }
+      if (touched) saveUtm(utm);
+    })();
 
     // ===== 初期化 =====
     (async function init(){
       $("#tenant-pill").textContent = APP.tenant;
-      // Turnstile: sitekey があれば表示
+
+      // Turnstile: sitekey があれば有効化
       if (APP.turnstileSiteKey) {
         tsWrap.style.display = "block";
         const el = tsWrap.querySelector(".cf-turnstile");
         el.setAttribute("data-sitekey", APP.turnstileSiteKey);
       }
-      // API ヘルス表示
+
+      // API ヘルス表示（同一オリジン）
       try {
         const r = await fetch("/health", { cache: "no-store" });
         if (r.ok) { dot.className = "dot ok"; stat.textContent = "API Online"; }
-        else      { dot.className = "dot ng"; stat.textContent = "API応答なし"; }
+        else { dot.className = "dot ng"; stat.textContent = "API応答なし"; }
       } catch {
         dot.className = "dot ng"; stat.textContent = "API接続エラー";
       }
@@ -133,21 +149,21 @@
       if (!name || !email) return setMsg("お名前とメールは必須です。", "ng");
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setMsg("メール形式が正しくありません。", "ng");
 
+      // 二重送信ガード
+      sendBtn.disabled = true; const origText = sendBtn.textContent; sendBtn.textContent = "送信中…";
       setMsg("送信中…", "dim");
-      const headers = { "content-type": "application/json" };
 
+      const headers = { "content-type": "application/json" };
       // Turnstile トークン（あればヘッダに付与）
       const tsInput = document.querySelector('input[name="cf-turnstile-response"]');
       if (tsInput && tsInput.value) headers["cf-turnstile-response"] = tsInput.value;
 
-      try{
-        const res = await fetch(APP.endpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ tenant: APP.tenant, name, email, channel, note }),
-        });
+      const payload = { tenant: APP.tenant, name, email, channel, note, utm: loadUtm() };
 
+      try{
+        const res = await fetch(APP.endpoint, { method: "POST", headers, body: JSON.stringify(payload) });
         const data = await res.json().catch(()=> ({}));
+
         if (!res.ok || !data.ok) {
           const err = data?.error || `http_${res.status}`;
           if (err === "rate_limited") return setMsg("連投が早すぎます。60秒ほど空けて再送してください。", "ng");
@@ -157,8 +173,12 @@
 
         setMsg("保存しました。ありがとうございます！", "ok");
         try { window.turnstile && window.turnstile.reset && window.turnstile.reset(); } catch {}
+        // サクセス遷移（CV計測用）
+        location.href = "/thanks?email=" + encodeURIComponent(email);
       }catch(e){
         setMsg("API接続に失敗しました。ネットワークを確認してください。", "ng");
+      } finally {
+        sendBtn.disabled = false; sendBtn.textContent = origText;
       }
     }
 
