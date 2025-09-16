@@ -39,7 +39,7 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
     tenant: (b.tenant ?? qp(u,"tenant") ?? "").toString().trim(),
     name:   (b.name   ?? qp(u,"name")   ?? "").toString().trim(),
     email:  (b.email  ?? qp(u,"email")  ?? "").toString().trim(),
-    // ★ ここが今回の修正点（() で明示）
+    // ← () を入れてビルド通る形に修正済み
     channel: (b.channel ?? qp(u,"channel")) || null,
     note:    (b.note    ?? qp(u,"note"))    || null,
     version: (b.version ?? qp(u,"version") ?? "").toString().trim(),
