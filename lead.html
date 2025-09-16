@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lead Form</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:40px}
+    form{display:grid;gap:12px;max-width:420px}
+    input,textarea,button{font:inherit;padding:10px;border:1px solid #ddd;border-radius:8px}
+    button{cursor:pointer}
+    pre{background:#f8f8f8;padding:10px;border-radius:8px}
+  </style>
+</head>
+<body>
+  <h1>Lead Form</h1>
+  <form id="lead-form">
+    <input name="name"  placeholder="Your name"  required />
+    <input name="email" type="email" placeholder="you@example.com" required />
+    <input name="channel" value="Website" />
+    <textarea name="note" placeholder="Your note"></textarea>
+    <button type="submit">Send</button>
+    <pre id="lead-out" style="white-space:pre-wrap"></pre>
+  </form>
+
+  <script>
+  document.getElementById('lead-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.currentTarget;
+    const out = document.getElementById('lead-out');
+    const payload = {
+      tenant: 'salon-booking-saas',
+      name: f.name.value.trim(),
+      email: f.email.value.trim(),
+      channel: (f.channel.value || '').trim() || null,
+      note: (f.note.value || '').trim() || null,
+    };
+    out.textContent = 'Sending...';
+    try {
+      const res = await fetch('/form/lead', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        out.textContent = json.duplicate ? '✅ Already exists (duplicate=true)' : '✅ Saved!';
+        f.reset();
+      } else {
+        out.textContent = '❌ ' + (json.error || 'unknown error');
+      }
+    } catch (err) {
+      out.textContent = '❌ Network: ' + err;
+    }
+  });
+  </script>
+</body>
+</html>
