@@ -1,9 +1,9 @@
 // functions/api.ts
 // Pages Functions (GET/POST/OPTIONS全部OK) + ビルド表示 + D1自己診断 + 例外安全化
-const BUILD = "v2025-09-15-verify-db-02";
+const BUILD = "v2025-09-15-fix-paren-01";
 
 interface Env {
-  DB?: D1Database;            // ← PagesのD1 Binding名は "DB" に合わせる
+  DB?: D1Database;            // PagesのD1 Binding名は "DB"
   API_KEY?: string;
   ADMIN_TOKEN?: string;
   ADMIN_KEY?: string;         // 互換
@@ -39,8 +39,9 @@ const bodyOrQuery = (req:Request,u:URL)=>({ parse: async()=>{
     tenant: (b.tenant ?? qp(u,"tenant") ?? "").toString().trim(),
     name:   (b.name   ?? qp(u,"name")   ?? "").toString().trim(),
     email:  (b.email  ?? qp(u,"email")  ?? "").toString().trim(),
-    channel: b.channel ?? qp(u,"channel") || null,
-    note:    b.note    ?? qp(u,"note")    || null,
+    // 👇 ここが今回の修正点（カッコを入れて明示）
+    channel: (b.channel ?? qp(u,"channel")) || null,
+    note:    (b.note    ?? qp(u,"note"))    || null,
     version: (b.version ?? qp(u,"version") ?? "").toString().trim(),
   };
 }});
