@@ -1,5 +1,7 @@
-/admin      /ui/admin.html 200
+﻿/line/*    /line/:splat   200
+/debug/*   /debug/:splat  200/admin      /ui/admin.html 200
 /api/*      /api/:splat    200
 /admin/*    /admin/:splat  200
 /health     /health        200
 /add-lead   /add-lead      200
+
