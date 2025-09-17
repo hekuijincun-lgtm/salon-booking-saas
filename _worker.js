@@ -1,7 +1,15 @@
-﻿// _worker.ts
+﻿// _worker.js  ← JS です！（tsじゃない）
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // --- debug: envの頭/尻/長さを見る ---
+    if (url.pathname === "/debug/line-env") {
+      const s = env.LINE_CHANNEL_SECRET || "";
+      const t = env.LINE_CHANNEL_ACCESS_TOKEN || "";
+      const json = { secretLen: s.length, secretHead: s.slice(0,4), secretTail: s.slice(-4), tokenLen: t.length };
+      return new Response(JSON.stringify(json), { headers: { "content-type": "application/json" } });
+    }
 
     // --- LINE webhook ---
     if (url.pathname === "/line/webhook") {
@@ -27,7 +35,7 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
-    // --- static assets ---
+    // --- その他は静的資産へ ---
     return env.ASSETS.fetch(request);
   }
 };
