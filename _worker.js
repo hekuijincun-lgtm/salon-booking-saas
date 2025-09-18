@@ -1,9 +1,8 @@
-﻿// _worker.js  ← JS です！（tsじゃない）
-export default {
+﻿export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // --- debug: envの頭/尻/長さを見る ---
+    // --- debug: env の確認（JSONを返す）
     if (url.pathname === "/debug/line-env") {
       const s = env.LINE_CHANNEL_SECRET || "";
       const t = env.LINE_CHANNEL_ACCESS_TOKEN || "";
@@ -35,7 +34,7 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
-    // --- その他は静的資産へ ---
+    // --- 静的資産へ ---
     return env.ASSETS.fetch(request);
   }
 };
