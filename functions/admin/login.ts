@@ -1,13 +1,21 @@
-export const onRequestPost: PagesFunction = async ({ request, env }) => {
-  const { username, password } = await request.json().catch(() => ({}));
-  // 超簡易：ENVのADMIN_TOKENが一致したらログインOKにするダミー
-  if (!username || !password) return new Response("Bad Request", { status: 400 });
+// functions/admin/login.ts
+type LoginReq = { username?: string; password?: string };
 
-  if (env.ADMIN_TOKEN && password === env.ADMIN_TOKEN) {
-    const h = new Headers({ "content-type": "application/json" });
-    // ダミーCookie（Secure属性は本番で付与推奨）
-    h.append("Set-Cookie", `admin_session=ok; Path=/; HttpOnly; SameSite=Lax`);
-    return new Response(JSON.stringify({ ok: true, user: username }), { status: 200, headers: h });
-  }
-  return new Response(JSON.stringify({ ok: false }), { status: 401, headers: { "content-type": "application/json" } });
+const json = (d: unknown, s = 200, h: Record<string,string> = {}) =>
+  new Response(JSON.stringify(d), { status: s, headers: { "content-type": "application/json", ...h } });
+
+export const onRequestPost: PagesFunction = async ({ request, env }) => {
+  const headers = request.headers;
+  const fromHeader = headers.get("x-admin-key") ?? "";
+  const bearer = (headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const body: LoginReq = await request.json().catch(() => ({}));
+  const candidate = fromHeader || bearer || body.password || "";
+
+  const expected = (env.ADMIN_KEY || env.ADMIN_TOKEN || "").trim();
+  if (!expected) return json({ ok:false, error:"missing ADMIN_KEY/ADMIN_TOKEN" }, 400);
+  if (!candidate) return json({ ok:false, error:"missing credential" }, 400);
+  if (candidate !== expected) return json({ ok:false, error:"invalid credential" }, 401);
+
+  const cookie = `admin_session=ok; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
+  return json({ ok:true, user: body.username ?? "admin" }, 200, { "Set-Cookie": cookie });
 };
