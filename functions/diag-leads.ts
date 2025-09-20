@@ -1,13 +1,13 @@
-// functions/diag-leads.ts
+// functions/diag-leads.ts  (dev用のゆる認可)
 const json = (d: unknown, s = 200) =>
   new Response(JSON.stringify(d), { status: s, headers: { "content-type": "application/json" } });
 
 const isAuthed = (req: Request, env: Env) => {
   const cookie = req.headers.get("cookie") ?? "";
-  const hasCookie = /(?:^|;\s*)admin_session=ok(?:;|$)/i.test(cookie);
-  const headerKey = req.headers.get("x-admin-key") ?? "";
-  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
-  const expected = (env.ADMIN_KEY || env.ADMIN_TOKEN || "").trim();
+  const hasCookie = /(?:^|;\s*)admin_session=([^;]+)/i.test(cookie); // 値は何でもOK（開発用）
+  const headerKey = (req.headers.get("x-admin-key") ?? "").trim();
+  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  const expected = ((env.ADMIN_KEY ?? env.ADMIN_TOKEN ?? "") as string).trim();
   return hasCookie || (!!expected && (headerKey === expected || bearer === expected));
 };
 
